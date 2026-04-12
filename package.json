@@ -1,0 +1,44 @@
+{
+  "name": "contract-api",
+  "version": "1.0.0",
+  "description": "Contract Service REST API — Package contracting, order management, and payment processing",
+  "main": "dist/main.js",
+  "author": "Hipnoticus",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "bun run dist/main.js",
+    "dev": "bun --watch src/main.ts",
+    "clean": "rimraf dist",
+    "prebuild": "bun run clean",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/swagger": "^7.4.0",
+    "@opentelemetry/exporter-zipkin": "^1.30.1",
+    "@opentelemetry/instrumentation-express": "^0.47.0",
+    "@opentelemetry/instrumentation-http": "^0.57.2",
+    "@opentelemetry/resources": "^1.30.1",
+    "@opentelemetry/sdk-node": "^0.57.2",
+    "@opentelemetry/semantic-conventions": "^1.30.0",
+    "@rocketsoftware/eureka-js-client": "^4.5.6",
+    "cloud-config-client": "^1.6.2",
+    "dotenv": "^16.4.2",
+    "ip": "^2.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "sequelize": "^6.37.0",
+    "tedious": "^18.6.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/ip": "^1.1.3",
+    "@types/node": "^22.10.7",
+    "rimraf": "^6.1.3",
+    "typescript": "5.9.3"
+  }
+}
