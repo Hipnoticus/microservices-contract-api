@@ -13,6 +13,7 @@ WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --production
 COPY --from=build /build/dist ./dist
+COPY certs/ ./certs/
 USER bun
 EXPOSE 3002
 CMD ["bun", "run", "dist/main.js"]

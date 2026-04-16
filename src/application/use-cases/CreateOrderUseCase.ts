@@ -50,7 +50,7 @@ export class CreateOrderUseCase {
     const t = await this.sequelize.transaction();
     try {
       // 1. Find or create customer
-      const customerId = await this.findOrCreateCustomer(dto.customer);
+      const customerId = await this.findOrCreateCustomer(dto.customer, dto.mainGoal);
       logger.info(`Customer ID: ${customerId}`);
 
       // 2. Create/update address
@@ -60,7 +60,9 @@ export class CreateOrderUseCase {
       // 3. Create order
       const order = await this.orderRepository.create({
         customerId,
-        statusId: 1, // Pendente
+        customerEmail: dto.customer.email,
+        customerAddressId: addressId,
+        statusId: 1, // Pendente (awaiting payment)
         mainGoal: dto.mainGoal,
         paymentMethodId: dto.paymentMethodId,
         firstAppointmentDay: String(dto.firstAppointmentDay),
@@ -87,7 +89,7 @@ export class CreateOrderUseCase {
     }
   }
 
-  private async findOrCreateCustomer(c: CustomerDTO): Promise<number> {
+  private async findOrCreateCustomer(c: CustomerDTO, mainGoalName: string): Promise<number> {
     // Check if customer exists by CPF or email
     const [existing] = await this.sequelize.query(
       `SELECT ID FROM tbCustomers WHERE CPFCNPJ = :cpf OR Email = :email`,
@@ -98,16 +100,25 @@ export class CreateOrderUseCase {
 
     // Create new customer
     const passwordHash = crypto.createHash('md5').update(c.firstName).digest('hex');
+
+    // Look up MainGoal issue ID (FK to tbIssues)
+    let mainGoalId = 0;
+    const [issue] = await this.sequelize.query(
+      `SELECT TOP 1 ID FROM tbIssues WHERE Name = :goal`,
+      { replacements: { goal: mainGoalName }, type: QueryTypes.SELECT },
+    ) as any[];
+    mainGoalId = issue?.ID || null;
+
     const [result] = await this.sequelize.query(
       `INSERT INTO tbCustomers (CallName, FirstName, LastName, Email, Password, CPFCNPJ, Sex, DateOfBirth, PhoneNumber, MainGoal, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
        OUTPUT INSERTED.ID
-       VALUES (:callName, :firstName, :lastName, :email, :password, :cpf, :sex, :dob, :phone, 0, 0, GETDATE(), GETDATE(), 1, 1)`,
+       VALUES (:callName, :firstName, :lastName, :email, :password, :cpf, :sex, :dob, :phone, :mainGoal, 0, GETDATE(), GETDATE(), 1, 1)`,
       {
         replacements: {
           callName: c.firstName, firstName: c.firstName, lastName: c.lastName,
           email: c.email, password: passwordHash, cpf: c.cpf,
           sex: c.gender === 'M' ? 'M' : 'F',
-          dob: c.birthDate, phone: c.phone,
+          dob: c.birthDate, phone: c.phone, mainGoal: mainGoalId,
         },
         type: QueryTypes.INSERT,
       },

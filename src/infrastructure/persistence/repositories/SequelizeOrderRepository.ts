@@ -19,44 +19,53 @@ export class SequelizeOrderRepository implements IOrderRepository {
   }
 
   async create(data: Partial<Order>): Promise<Order> {
-    const model = await OrderModel.create({
-      customerId: data.customerId,
-      customerEmail: (data as any).customerEmail || null,
-      orderStatusId: data.statusId || 1,
-      mainGoal: data.mainGoal,
-      formaPagamento: data.paymentMethodId,
-      subTotal: data.total,
-      total: data.total,
-      firstAppointmentDay: data.firstAppointmentDay,
-      firstAppointmentHour: data.firstAppointmentHour,
-      sessionDay: data.sessionDay,
-      sessionHour: data.sessionHour,
-      blocked: false,
-      dateCreated: new Date(),
-      dateModified: new Date(),
-      createdBy: 1,
-      modifiedBy: 1,
-    } as any);
-    return this.toDomain(model);
+    // Use raw INSERT with GETDATE() to avoid Sequelize timezone offset issues with SQL Server datetime
+    // Include CustomerEmail and CustomerAddressID to match legacy order structure
+    const [result] = await OrderModel.sequelize!.query(
+      `INSERT INTO tbOrders (CustomerID, CustomerEmail, CustomerAddressID, OrderStatusID, MainGoal, FormaPagamento, SubTotal, Total, ShipValue,
+        FirstAppointmentDay, FirstAppointmentHour, SessionDay, SessionHour, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+       OUTPUT INSERTED.ID
+       VALUES (:customerId, :email, :addressId, :statusId, :mainGoal, :paymentMethodId, :subTotal, :total, 0,
+        :firstAppointmentDay, :firstAppointmentHour, :sessionDay, :sessionHour, 0, GETDATE(), GETDATE(), 1, 1)`,
+      {
+        replacements: {
+          customerId: data.customerId,
+          email: (data as any).customerEmail || null,
+          addressId: (data as any).customerAddressId || null,
+          statusId: data.statusId || 1,
+          mainGoal: data.mainGoal || '',
+          paymentMethodId: data.paymentMethodId || 0,
+          subTotal: data.total || 0,
+          total: data.total || 0,
+          firstAppointmentDay: data.firstAppointmentDay || null,
+          firstAppointmentHour: data.firstAppointmentHour || null,
+          sessionDay: data.sessionDay || null,
+          sessionHour: data.sessionHour || null,
+        },
+      },
+    );
+    const insertedId = (result as any)[0]?.ID;
+    if (!insertedId) throw new Error('Failed to create order — no ID returned');
+    const model = await OrderModel.findByPk(insertedId);
+    return this.toDomain(model!);
   }
 
   async updateStatus(id: number, statusId: number): Promise<Order | null> {
+    await OrderModel.sequelize!.query(
+      `UPDATE tbOrders SET OrderStatusID = :statusId, DateModified = GETDATE() WHERE ID = :id`,
+      { replacements: { statusId, id } },
+    );
     const model = await OrderModel.findByPk(id);
-    if (!model) return null;
-    model.orderStatusId = statusId;
-    model.dateModified = new Date();
-    await model.save();
-    return this.toDomain(model);
+    return model ? this.toDomain(model) : null;
   }
 
   async updatePayment(id: number, identifier: string, registry: string): Promise<Order | null> {
+    await OrderModel.sequelize!.query(
+      `UPDATE tbOrders SET Identifier = :identifier, Registry = :registry, DateModified = GETDATE() WHERE ID = :id`,
+      { replacements: { identifier, registry, id } },
+    );
     const model = await OrderModel.findByPk(id);
-    if (!model) return null;
-    model.identifier = identifier;
-    model.registry = registry;
-    model.dateModified = new Date();
-    await model.save();
-    return this.toDomain(model);
+    return model ? this.toDomain(model) : null;
   }
 
   private toDomain(model: OrderModel): Order {
