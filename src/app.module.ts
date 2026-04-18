@@ -114,7 +114,7 @@ const logger = new Logger('AppModule');
     {
       provide: 'SEND_EMAIL',
       useFactory: (db: Sequelize) => {
-        const emailApiUrl = process.env.EMAIL_API_URL || 'http://hipnoticus-email-api:8100/email-service';
+        const emailApiUrl = process.env.EMAIL_API_URL || 'http://hipnoticus-email-api:8100';
         return new SendConfirmationEmailUseCase(db, emailApiUrl);
       },
       inject: ['DATABASE'],
