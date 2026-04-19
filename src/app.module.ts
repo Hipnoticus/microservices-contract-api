@@ -22,13 +22,14 @@ import { PaymentController } from './interfaces/http/controllers/PaymentControll
 import { ConfigController } from './interfaces/http/controllers/ConfigController';
 import { ScheduleController } from './interfaces/http/controllers/ScheduleController';
 import { CustomerCardController } from './interfaces/http/controllers/CustomerCardController';
+import { TreatmentController } from './interfaces/http/controllers/TreatmentController';
 import { initializeCustomerCardModel } from './infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from './shared/logger/Logger';
 
 const logger = new Logger('AppModule');
 
 @Module({
-  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController],
+  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController],
   providers: [
     {
       provide: 'DATABASE',
