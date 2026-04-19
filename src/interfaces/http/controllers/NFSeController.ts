@@ -116,7 +116,7 @@ export class NFSeController {
     return { success: true };
   }
 
-  /** Issue (emit) NFS-e — sends to SEFAZ */
+  /** Issue (emit) NFS-e — sends to SEFAZ via NFS-e Nacional API */
   @Post(':id/issue')
   async issue(@Param('id') id: string) {
     const [nfse] = await this.db.query('SELECT * FROM tbNFSe WHERE ID = :id', { replacements: { id: parseInt(id, 10) }, type: QueryTypes.SELECT }) as any[];
@@ -127,21 +127,11 @@ export class NFSeController {
     const configs = await this.db.query('SELECT ConfigKey, ConfigValue FROM tbNFSeConfig', { type: QueryTypes.SELECT }) as any[];
     const cfg = Object.fromEntries(configs.map((c: any) => [c.ConfigKey, c.ConfigValue]));
 
-    // TODO: Implement SEFAZ SOAP communication
-    // For now, simulate the issuance with a placeholder
-    // The actual implementation requires:
-    // 1. Build the XML RPS (Recibo Provisório de Serviço) following ABRASF 2.04 or DF-specific schema
-    // 2. Sign the XML with the e-CNPJ digital certificate
-    // 3. Send to SEFAZ/DF web service endpoint
-    // 4. Parse the response to get the NFS-e number and verification code
-
-    const environment = cfg.Environment || 'homologacao';
-    const isProduction = environment === 'producao';
+    const environment = (cfg.Environment || 'homologacao') as 'homologacao' | 'producao';
 
     if (!cfg.CertificatePath) {
-      // No certificate configured — create as pending with instructions
       await this.db.query(`
-        UPDATE tbNFSe SET Status = 5, StatusMessage = 'Certificado digital não configurado. Configure em ControleWeb > NFS-e > Configurações.',
+        UPDATE tbNFSe SET Status = 5, StatusMessage = 'Certificado digital e-CNPJ não configurado. Configure em ControleWeb > NFS-e > Configurações.',
         DateModified = GETDATE() WHERE ID = :id
       `, { replacements: { id: parseInt(id, 10) }, type: QueryTypes.UPDATE });
 
@@ -152,22 +142,78 @@ export class NFSeController {
       };
     }
 
-    // Mark as issued (placeholder — real implementation sends to SEFAZ)
-    const nfseNumber = `NFSe-${Date.now()}`;
-    const verificationCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+    // Initialize the NFS-e Nacional service
+    const { NFSeNacionalService } = await import('../../infrastructure/nfse/NFSeNacionalService');
+    const nfseService = new NFSeNacionalService({
+      cnpj: cfg.CNPJ || '12344385000193',
+      inscricaoMunicipal: cfg.InscricaoMunicipal || '',
+      razaoSocial: cfg.RazaoSocial || 'HIPNOTICUS TERAPIA LTDA',
+      nomeFantasia: cfg.NomeFantasia || 'Hipnoticus',
+      codigoMunicipio: cfg.CodigoMunicipio || '5300108',
+      uf: cfg.UF || 'DF',
+      serviceCode: cfg.ServiceCode || '8690-9/99',
+      serviceDescription: cfg.ServiceDescription || 'Serviços de hipnoterapia clínica',
+      issRate: parseFloat(cfg.ISSRate || '5.00'),
+      environment,
+      certPath: cfg.CertificatePath,
+      certPassword: cfg.CertificatePassword || '',
+    });
 
-    await this.db.query(`
-      UPDATE tbNFSe SET Status = 2, Number = :number, VerificationCode = :code,
-      DateIssued = GETDATE(), DateModified = GETDATE(),
-      StatusMessage = :msg
-      WHERE ID = :id
-    `, {
-      replacements: {
-        id: parseInt(id, 10),
-        number: nfseNumber,
-        code: verificationCode,
-        msg: isProduction ? 'NFS-e emitida com sucesso' : 'NFS-e emitida em ambiente de homologação',
-      },
+    // Emit the DPS
+    const result = await nfseService.emitirDPS({
+      prestadorCnpj: cfg.CNPJ || '12344385000193',
+      prestadorIM: cfg.InscricaoMunicipal || '',
+      tomadorCpfCnpj: nfse.TomadorCPFCNPJ,
+      tomadorNome: nfse.TomadorName,
+      tomadorEmail: nfse.TomadorEmail || undefined,
+      codigoServico: nfse.ServiceCode || cfg.ServiceCode || '8690-9/99',
+      descricaoServico: nfse.ServiceDescription,
+      valorServico: parseFloat(nfse.Value),
+      aliquotaISS: parseFloat(nfse.ISSRate),
+      codigoMunicipio: cfg.CodigoMunicipio || '5300108',
+    });
+
+    if (result.success) {
+      await this.db.query(`
+        UPDATE tbNFSe SET Status = 2, Number = :number, VerificationCode = :code,
+        Protocol = :protocol, PDFUrl = :pdfUrl,
+        XMLRequest = :xmlReq, XMLResponse = :xmlRes,
+        DateIssued = GETDATE(), DateModified = GETDATE(),
+        StatusMessage = :msg
+        WHERE ID = :id
+      `, {
+        replacements: {
+          id: parseInt(id, 10),
+          number: result.nfseNumber || '',
+          code: result.chaveAcesso || '',
+          protocol: result.protocol || '',
+          pdfUrl: result.pdfUrl || '',
+          xmlReq: result.xmlRequest || '',
+          xmlRes: result.xmlResponse || '',
+          msg: environment === 'producao' ? 'NFS-e emitida com sucesso via SEFAZ' : 'NFS-e emitida em ambiente de homologação',
+        },
+        type: QueryTypes.UPDATE,
+      });
+
+      logger.info(`NFS-e ${result.nfseNumber} issued for ID ${id} (${environment})`);
+      return { success: true, number: result.nfseNumber, chaveAcesso: result.chaveAcesso, pdfUrl: result.pdfUrl, environment };
+    } else {
+      await this.db.query(`
+        UPDATE tbNFSe SET Status = 5, StatusMessage = :msg,
+        XMLRequest = :xmlReq, XMLResponse = :xmlRes,
+        DateModified = GETDATE() WHERE ID = :id
+      `, {
+        replacements: {
+          id: parseInt(id, 10),
+          msg: result.error || 'Erro na emissão',
+          xmlReq: result.xmlRequest || '',
+          xmlRes: result.xmlResponse || '',
+        },
+        type: QueryTypes.UPDATE,
+      });
+
+      return { success: false, error: result.error };
+    }
       type: QueryTypes.UPDATE,
     });
 
