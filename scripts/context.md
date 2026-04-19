@@ -1,4 +1,4 @@
-# Hipnoticus Project Context — April 16, 2026
+# Hipnoticus Project Context — April 18, 2026
 ## For continuing development on another machine
 
 ---
@@ -112,12 +112,22 @@ Frontend:
 
 ## Known Issues / TODO
 - PIX API scope needs to be enabled in Banco Inter portal for dynamic PIX cobranca
-- EmailAPI returns 404 for /send endpoint (needs context-path check: /email-service/send)
 - Questionnaire results by specific request hash (per-session results) — currently falls back to customer-level
 - Questionnaire multi-answer: data model supports it, UI needs timeline/comparison view
 - Session creation needs to check slot availability before inserting
 - The system should support multiple questionnaire answers per client (different phases/treatments)
 - Each questionnaire request is tied to a treatment which has PhaseDefined/PhaseDetected
+
+## Completed Since Last Context
+- Dark theme lightened from #1f2234 to #252a3a (warm slate, still dark but easier on the eyes)
+- ContractAPI database access verified: uses env vars (HOST, SQL_PORT, DB, USER, PASSWORD) — NOT hardcoded
+- ContractAPI added to docker-compose.prod.yml with full env var configuration
+- Controleweb payment method edit fix (numeric columns no longer quoted in SQL)
+- Payment methods: only Cielo CC (ID 4) and Banco Inter Boleto (ID 6) enabled
+- CFs activity section white background fixed for dark theme
+- Badge colors fixed (orange-on-orange, green-on-green resolved)
+- UserAPI Go service: changed from hardcoded prod URL to env vars with encrypt=disable
+- Questionários page now shows requests (pending + answered) alongside results
 
 ## Git Repos (all pushed to origin/main)
 - microservices: 1a6830b
