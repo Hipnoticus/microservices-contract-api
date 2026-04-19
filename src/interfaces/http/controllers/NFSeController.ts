@@ -68,11 +68,11 @@ export class NFSeController {
     const [result] = await this.db.query(`
       INSERT INTO tbNFSe (OrderID, SessionID, CustomerID, CNPJ, InscricaoMunicipal,
         ServiceCode, ServiceDescription, Value, ISSRate, ISSValue,
-        TomadorCPFCNPJ, TomadorName, TomadorEmail, Status)
+        TomadorCPFCNPJ, TomadorName, TomadorEmail, Status, Name, Description)
       OUTPUT INSERTED.ID
       VALUES (:orderId, :sessionId, :customerId, :cnpj, :im,
         :serviceCode, :serviceDesc, :value, :issRate, :issValue,
-        :cpf, :name, :email, 1)
+        :cpf, :name, :email, 1, :name, :serviceDesc)
     `, {
       replacements: {
         orderId: body.orderId || null,
