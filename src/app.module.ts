@@ -21,12 +21,14 @@ import { PaymentMethodController, OrderStatusController } from './interfaces/htt
 import { PaymentController } from './interfaces/http/controllers/PaymentController';
 import { ConfigController } from './interfaces/http/controllers/ConfigController';
 import { ScheduleController } from './interfaces/http/controllers/ScheduleController';
+import { CustomerCardController } from './interfaces/http/controllers/CustomerCardController';
+import { initializeCustomerCardModel } from './infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from './shared/logger/Logger';
 
 const logger = new Logger('AppModule');
 
 @Module({
-  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController],
+  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController],
   providers: [
     {
       provide: 'DATABASE',
@@ -50,6 +52,7 @@ const logger = new Logger('AppModule');
         initializePackageModel(sequelize);
         initializePaymentMethodModel(sequelize);
         initializeOrderStatusModel(sequelize);
+        initializeCustomerCardModel(sequelize);
 
         await sequelize.authenticate();
         logger.info('Database connection established');

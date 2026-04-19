@@ -137,4 +137,122 @@ export class CieloGateway {
       };
     }
   }
+
+  async tokenizeCard(data: {
+    customerName: string;
+    cardNumber: string;
+    holder: string;
+    expirationDate: string;
+    brand: string;
+  }): Promise<{ cardToken: string | null; error?: string }> {
+    try {
+      const body = {
+        CustomerName: data.customerName,
+        CardNumber: data.cardNumber.replace(/\s/g, ''),
+        Holder: data.holder,
+        ExpirationDate: data.expirationDate,
+        Brand: data.brand,
+      };
+
+      logger.info(`Cielo tokenize: brand=${data.brand} last4=****${data.cardNumber.slice(-4)}`);
+
+      const res = await fetch(`${this.apiUrl}/1/card/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'MerchantId': this.config.merchantId,
+          'MerchantKey': this.config.merchantKey,
+        },
+        body: JSON.stringify(body),
+      });
+
+      const result = await res.json() as any;
+
+      if (result?.CardToken) {
+        logger.info(`Cielo tokenize success: token=${result.CardToken.substring(0, 8)}...`);
+        return { cardToken: result.CardToken };
+      }
+
+      const errMsg = Array.isArray(result) ? result.map((e: any) => e.Message).join('; ') : 'Unknown error';
+      logger.error(`Cielo tokenize failed: ${errMsg}`);
+      return { cardToken: null, error: errMsg };
+    } catch (error) {
+      logger.error(`Cielo tokenize error: ${(error as Error).message}`);
+      return { cardToken: null, error: (error as Error).message };
+    }
+  }
+
+  async createTransactionWithToken(
+    orderId: string,
+    customerName: string,
+    amount: number,
+    installments: number,
+    cardToken: string,
+    securityCode: string,
+    brand: string,
+  ): Promise<CieloTransactionResult> {
+    const amountCentavos = Math.round(amount * 100);
+
+    const body = {
+      MerchantOrderId: orderId,
+      Customer: { Name: customerName },
+      Payment: {
+        Type: 'CreditCard',
+        Amount: amountCentavos,
+        Installments: installments,
+        SoftDescriptor: 'HIPNOTICUS',
+        Capture: false,
+        CreditCard: {
+          CardToken: cardToken,
+          SecurityCode: securityCode,
+          Brand: brand,
+        },
+      },
+    };
+
+    logger.info(`Cielo token transaction: order=${orderId} amount=${amountCentavos} brand=${brand}`);
+
+    try {
+      const res = await fetch(`${this.apiUrl}/1/sales/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'MerchantId': this.config.merchantId,
+          'MerchantKey': this.config.merchantKey,
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json() as any;
+
+      if (Array.isArray(data)) {
+        const errMsg = data.map((e: any) => `${e.Code}: ${e.Message}`).join('; ');
+        return {
+          success: false, paymentId: null, tid: null, authorizationCode: null,
+          status: -1, statusMessage: 'CieloError',
+          returnCode: data[0]?.Code?.toString() || null, returnMessage: errMsg,
+        };
+      }
+
+      const payment = data?.Payment || {};
+      const status = payment.Status ?? -1;
+
+      return {
+        success: status === 1 || status === 2,
+        paymentId: payment.PaymentId || null,
+        tid: payment.Tid || null,
+        authorizationCode: payment.AuthorizationCode || null,
+        status,
+        statusMessage: CIELO_STATUS[status] || 'Unknown',
+        returnCode: payment.ReturnCode || null,
+        returnMessage: payment.ReturnMessage || null,
+      };
+    } catch (error) {
+      return {
+        success: false, paymentId: null, tid: null, authorizationCode: null,
+        status: -1, statusMessage: 'NetworkError',
+        returnCode: null, returnMessage: (error as Error).message,
+      };
+    }
+  }
 }
