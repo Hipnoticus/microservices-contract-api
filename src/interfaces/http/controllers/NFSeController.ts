@@ -214,11 +214,6 @@ export class NFSeController {
 
       return { success: false, error: result.error };
     }
-      type: QueryTypes.UPDATE,
-    });
-
-    logger.info(`NFS-e ${nfseNumber} issued for ID ${id} (${environment})`);
-    return { success: true, number: nfseNumber, verificationCode, environment };
   }
 
   /** Cancel NFS-e */
