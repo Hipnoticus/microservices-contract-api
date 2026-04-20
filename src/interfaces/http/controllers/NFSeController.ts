@@ -143,7 +143,7 @@ export class NFSeController {
     }
 
     // Initialize the NFS-e Nacional service
-    const { NFSeNacionalService } = await import('../../infrastructure/nfse/NFSeNacionalService');
+    const { NFSeNacionalService } = await import('../../../infrastructure/nfse/NFSeNacionalService');
     const nfseService = new NFSeNacionalService({
       cnpj: cfg.CNPJ || '12344385000193',
       inscricaoMunicipal: cfg.InscricaoMunicipal || '',
