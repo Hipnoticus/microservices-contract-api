@@ -31,8 +31,8 @@ export class LeadController {
 
   @Post('register')
   @ApiOperation({ summary: 'Register a lead (unlogged visitor) to Interspire Email Marketer' })
-  async registerLead(@Body() body: { name: string; email: string; phone?: string; packageName?: string }) {
-    const { name, email, phone, packageName } = body;
+  async registerLead(@Body() body: { name: string; email: string; phone?: string; cpf?: string; packageName?: string }) {
+    const { name, email, phone, cpf, packageName } = body;
 
     if (!name || !email) {
       return { success: false, error: 'Nome e e-mail são obrigatórios.' };
@@ -44,7 +44,7 @@ export class LeadController {
 
     // 1. Register on Interspire Email Marketer
     try {
-      const xml = this.buildInterspireXml(email, name, firstName, lastName, phone || '');
+      const xml = this.buildInterspireXml(email, name, firstName, lastName, phone || '', cpf || '');
       const response = await fetch(this.interspireUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'text/xml' },
@@ -75,6 +75,7 @@ export class LeadController {
             Name NVARCHAR(200) NOT NULL,
             Email NVARCHAR(200) NOT NULL,
             Phone NVARCHAR(50) NULL,
+            CPF NVARCHAR(14) NULL,
             PackageName NVARCHAR(200) NULL,
             Source NVARCHAR(50) DEFAULT 'moses',
             DateCreated DATETIME DEFAULT GETDATE()
@@ -84,8 +85,8 @@ export class LeadController {
       `);
 
       await this.db.query(
-        `INSERT INTO tbLeads (Name, Email, Phone, PackageName) VALUES (:name, :email, :phone, :pkg)`,
-        { replacements: { name, email, phone: phone || null, pkg: packageName || null }, type: QueryTypes.INSERT },
+        `INSERT INTO tbLeads (Name, Email, Phone, CPF, PackageName) VALUES (:name, :email, :phone, :cpf, :pkg)`,
+        { replacements: { name, email, phone: phone || null, cpf: cpf || null, pkg: packageName || null }, type: QueryTypes.INSERT },
       );
     } catch (err: any) {
       logger.warn(`Failed to log lead locally: ${err.message}`);
@@ -94,7 +95,7 @@ export class LeadController {
     return { success: true };
   }
 
-  private buildInterspireXml(email: string, fullName: string, firstName: string, lastName: string, phone: string): string {
+  private buildInterspireXml(email: string, fullName: string, firstName: string, lastName: string, phone: string, cpf: string): string {
     return `<xmlrequest>
   <username>${this.interspireUsername}</username>
   <usertoken>${this.interspireToken}</usertoken>
@@ -112,6 +113,7 @@ export class LeadController {
       <item><fieldid>44</fieldid><value>${this.escapeXml(firstName)}</value></item>
       <item><fieldid>19</fieldid><value>${this.escapeXml(firstName)}</value></item>
       <item><fieldid>4</fieldid><value>${this.escapeXml(phone)}</value></item>
+      <item><fieldid>21</fieldid><value>${this.escapeXml(cpf)}</value></item>
     </customfields>
   </details>
 </xmlrequest>`;
