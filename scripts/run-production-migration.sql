@@ -1,23 +1,23 @@
--- Production Migration Script
--- Run on mssql2.hipnoterapia.org (production database)
--- Updated: April 20, 2026
--- All statements are idempotent (safe to run multiple times)
+-- Production Migration — April 20, 2026
+-- Run against mssql2.hipnoterapia.org / Hipnoticus
+-- All statements are idempotent
 
 -- ═══════════════════════════════════════════════════════════════
--- 1. QAQS Questionnaire (Qualidade do Sono)
+-- 1. QAQS Questionnaire (Qualidade do Sono) — ID 9
 -- ═══════════════════════════════════════════════════════════════
 IF NOT EXISTS (SELECT 1 FROM tbQuestionnaires WHERE ShortName = 'QAQS')
 BEGIN
-    SET IDENTITY_INSERT tbQuestionnaires ON;
+    SET IDENTITY_INSERT tbQuestionnaires ON
     INSERT INTO tbQuestionnaires (ID, Name, ShortName, Description, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
-    VALUES (9, N'Questionário de Análise de Qualidade do Sono', 'QAQS', N'Nas perguntas abaixo, responda apenas Sim ou Não.', 0, GETDATE(), GETDATE(), 1, 1);
-    SET IDENTITY_INSERT tbQuestionnaires OFF;
-    PRINT 'QAQS questionnaire created';
+    VALUES (9, N'Questionário de Análise de Qualidade do Sono', 'QAQS', N'Nas perguntas abaixo, responda apenas Sim ou Não.', 0, GETDATE(), GETDATE(), 1, 1)
+    SET IDENTITY_INSERT tbQuestionnaires OFF
+    PRINT 'QAQS questionnaire created'
 END
+GO
 
 IF NOT EXISTS (SELECT 1 FROM tbQuestionnairesQuestions WHERE Questionnaire = 9)
 BEGIN
-    SET IDENTITY_INSERT tbQuestionnairesQuestions ON;
+    SET IDENTITY_INSERT tbQuestionnairesQuestions ON
     INSERT INTO tbQuestionnairesQuestions (ID, Question, Questionnaire, PriorityOrder, AnswerType, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy) VALUES
     (217, N'Você tem facilidade para adormecer (pegar no sono) na hora que precisa ou deseja?', 9, 1, 1, 0, GETDATE(), GETDATE(), 1, 1),
     (218, N'Você tem um sono reparador (acorda descansado)?', 9, 2, 1, 0, GETDATE(), GETDATE(), 1, 1),
@@ -28,13 +28,14 @@ BEGIN
     (223, N'Você lembra dos seus sonhos durante o dia?', 9, 7, 1, 0, GETDATE(), GETDATE(), 1, 1),
     (224, N'Você lembra dos seus sonhos dias depois do mesmo ter ocorrido?', 9, 8, 1, 0, GETDATE(), GETDATE(), 1, 1),
     (225, N'Você dorme sempre no mesmo horário?', 9, 9, 1, 0, GETDATE(), GETDATE(), 1, 1),
-    (226, N'Você dorme em horários muito diferentes?', 9, 10, 1, 0, GETDATE(), GETDATE(), 1, 1);
-    SET IDENTITY_INSERT tbQuestionnairesQuestions OFF;
-    PRINT 'QAQS questions created';
+    (226, N'Você dorme em horários muito diferentes?', 9, 10, 1, 0, GETDATE(), GETDATE(), 1, 1)
+    SET IDENTITY_INSERT tbQuestionnairesQuestions OFF
+    PRINT 'QAQS questions created'
 END
+GO
 
 -- ═══════════════════════════════════════════════════════════════
--- 2. Customer Cards table (Cielo tokenization)
+-- 2. Customer Cards (Cielo tokenization)
 -- ═══════════════════════════════════════════════════════════════
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'tbCustomerCards')
 BEGIN
@@ -52,10 +53,11 @@ BEGIN
         DateCreated DATETIME DEFAULT GETDATE(),
         DateModified DATETIME DEFAULT GETDATE(),
         CONSTRAINT FK_CustomerCards_Customer FOREIGN KEY (CustomerID) REFERENCES tbCustomers(ID)
-    );
-    CREATE INDEX IX_CustomerCards_CustomerID ON tbCustomerCards(CustomerID);
-    PRINT 'tbCustomerCards created';
+    )
+    CREATE INDEX IX_CustomerCards_CustomerID ON tbCustomerCards(CustomerID)
+    PRINT 'tbCustomerCards created'
 END
+GO
 
 -- ═══════════════════════════════════════════════════════════════
 -- 3. NFS-e tables
@@ -95,11 +97,12 @@ BEGIN
         CreatedBy INT DEFAULT 1,
         ModifiedBy INT DEFAULT 1,
         CONSTRAINT FK_NFSe_Customer FOREIGN KEY (CustomerID) REFERENCES tbCustomers(ID)
-    );
-    CREATE INDEX IX_NFSe_CustomerID ON tbNFSe(CustomerID);
-    CREATE INDEX IX_NFSe_OrderID ON tbNFSe(OrderID);
-    PRINT 'tbNFSe created';
+    )
+    CREATE INDEX IX_NFSe_CustomerID ON tbNFSe(CustomerID)
+    CREATE INDEX IX_NFSe_OrderID ON tbNFSe(OrderID)
+    PRINT 'tbNFSe created'
 END
+GO
 
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'tbNFSeConfig')
 BEGIN
@@ -109,7 +112,7 @@ BEGIN
         ConfigValue NVARCHAR(1000) NOT NULL,
         Description NVARCHAR(500) NULL,
         DateModified DATETIME DEFAULT GETDATE()
-    );
+    )
     INSERT INTO tbNFSeConfig (ConfigKey, ConfigValue, Description) VALUES
     ('CNPJ', '12344385000193', N'CNPJ do prestador'),
     ('InscricaoMunicipal', '', N'Inscrição Municipal'),
@@ -123,9 +126,10 @@ BEGIN
     ('Environment', 'homologacao', N'homologacao ou producao'),
     ('CertificatePath', '', N'Caminho do e-CNPJ (.pfx)'),
     ('CertificatePassword', '', N'Senha do certificado'),
-    ('AutoIssue', 'false', N'Emissão automática');
-    PRINT 'tbNFSeConfig created';
+    ('AutoIssue', 'false', N'Emissão automática')
+    PRINT 'tbNFSeConfig created'
 END
+GO
 
 -- ═══════════════════════════════════════════════════════════════
 -- 4. NFS-e module in ControleWeb
@@ -138,42 +142,42 @@ BEGIN
     VALUES (N'NFS-e', N'Notas Fiscais de Serviço Eletrônicas', 'Write Document.png', 'nfse', 'nfse', 'tbNFSe', 0,
         'ID, Name, Description, '''' as Icon, DateCreated',
         'ID, Name, Description, DateCreated',
-        GETDATE(), GETDATE(), 1, 1);
-    PRINT 'NFS-e module registered';
+        GETDATE(), GETDATE(), 1, 1)
+    PRINT 'NFS-e module registered'
 END
+GO
 
 -- ═══════════════════════════════════════════════════════════════
--- 5. Leads table (Interspire lead capture from Moses)
+-- 5. Leads table — add missing columns to existing table
 -- ═══════════════════════════════════════════════════════════════
-IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'tbLeads')
-BEGIN
-    CREATE TABLE tbLeads (
-        ID INT IDENTITY(1,1) PRIMARY KEY,
-        Name NVARCHAR(200) NOT NULL,
-        Email NVARCHAR(200) NOT NULL,
-        Phone NVARCHAR(50) NULL,
-        CPF NVARCHAR(14) NULL,
-        PackageName NVARCHAR(200) NULL,
-        Source NVARCHAR(50) DEFAULT 'moses',
-        DateCreated DATETIME DEFAULT GETDATE()
-    );
-    CREATE INDEX IX_Leads_Email ON tbLeads(Email);
-    PRINT 'tbLeads created';
-END
-ELSE
-BEGIN
-    -- Ensure CPF column exists (added after initial creation)
-    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'CPF')
-    BEGIN
-        ALTER TABLE tbLeads ADD CPF NVARCHAR(14) NULL;
-        PRINT 'tbLeads: CPF column added';
-    END
-END
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'Name')
+    ALTER TABLE tbLeads ADD Name NVARCHAR(200) NULL
+GO
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'Email')
+    ALTER TABLE tbLeads ADD Email NVARCHAR(200) NULL
+GO
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'Phone')
+    ALTER TABLE tbLeads ADD Phone NVARCHAR(50) NULL
+GO
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'CPF')
+    ALTER TABLE tbLeads ADD CPF NVARCHAR(14) NULL
+GO
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'PackageName')
+    ALTER TABLE tbLeads ADD PackageName NVARCHAR(200) NULL
+GO
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbLeads' AND COLUMN_NAME = 'Source')
+    ALTER TABLE tbLeads ADD Source NVARCHAR(50) NULL
+GO
+IF NOT EXISTS (SELECT name FROM sys.indexes WHERE name = 'IX_Leads_Email' AND object_id = OBJECT_ID('tbLeads'))
+    CREATE INDEX IX_Leads_Email ON tbLeads(Email)
+GO
 
 -- ═══════════════════════════════════════════════════════════════
--- 6. Clean up test sessions (if still present)
+-- 6. Clean up test sessions
 -- ═══════════════════════════════════════════════════════════════
-DELETE FROM tbSessions WHERE ID IN (3560, 3561, 3562, 3563) AND ClientID = 43;
-DELETE FROM tbSchedule WHERE ClientID = 43 AND YEAR(DateBegins) = 2024 AND ID > 164;
+DELETE FROM tbSessions WHERE ID IN (3560, 3561, 3562, 3563) AND ClientID = 43
+DELETE FROM tbSchedule WHERE ClientID = 43 AND YEAR(DateBegins) = 2024 AND ID > 164
+GO
 
-PRINT '=== Production migration complete ===';
+PRINT '=== Production migration complete ==='
+GO
