@@ -28,6 +28,12 @@ export class TreatmentController {
       LEFT JOIN tbOrders o ON o.ID = t.OrderNumber
       LEFT JOIN tbOrdersStatus os ON os.ID = o.OrderStatusID
       WHERE t.Customer = :customerId
+        AND (
+          -- Show treatments that have sessions
+          EXISTS (SELECT 1 FROM tbSessions s WHERE s.Treatment = t.ID)
+          -- Or the most recent treatment per MainGoal if none have sessions
+          OR t.ID = (SELECT MAX(t2.ID) FROM tbTreatments t2 WHERE t2.Customer = t.Customer AND t2.MainGoal = t.MainGoal)
+        )
       ORDER BY t.ID DESC
     `, {
       replacements: { customerId: parseInt(customerId, 10) },
