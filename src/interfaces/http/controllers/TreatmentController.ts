@@ -47,10 +47,12 @@ export class TreatmentController {
   async getSessionsByTreatment(@Param('treatmentId') treatmentId: string) {
     const sessions = await this.db.query(`
       SELECT s.ID, s.ClientID, s.Treatment, s.DateBegins, s.DateEnds,
-             s.Status, s.Value, s.PaymentType,
-             ss.Name as StatusName
+             s.Status, s.Value, s.PaymentType, s.Name, s.Notes, s.MainGoal,
+             ss.Name as StatusName,
+             i.Name as GoalName
       FROM tbSessions s
       LEFT JOIN tbSessionsStatus ss ON ss.ID = s.Status
+      LEFT JOIN tbIssues i ON i.ID = s.MainGoal
       WHERE s.Treatment = :treatmentId
       ORDER BY s.DateBegins ASC
     `, {
