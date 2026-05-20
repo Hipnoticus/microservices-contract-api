@@ -12,6 +12,8 @@ import { CieloGateway, CieloCardData, CieloTransactionResult } from '../../infra
 import { BancoInterGateway, BoletoResult, PixCobrancaResult } from '../../infrastructure/payment/BancoInterGateway';
 import { IOrderRepository } from '../../domain/repositories/IOrderRepository';
 import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEmailUseCase';
+import { CreateSessionsUseCase } from './CreateSessionsUseCase';
+import { CustomerCard } from '../../infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from '../../shared/logger/Logger';
 
 const logger = new Logger('ProcessPaymentUseCase');
@@ -51,6 +53,9 @@ export interface PaymentRequest {
     securityCode: string;
     brand: string;
   };
+  // Save card for future use (tokenize with Cielo)
+  saveCard?: boolean;
+  customerId?: number;
 }
 
 export interface PaymentResponse {
@@ -82,6 +87,7 @@ export class ProcessPaymentUseCase {
     private readonly bancoInterGateway: BancoInterGateway | null,
     private readonly sequelize?: any,
     private readonly sendEmailUseCase?: SendConfirmationEmailUseCase | null,
+    private readonly createSessionsUseCase?: CreateSessionsUseCase | null,
   ) {}
 
   async execute(req: PaymentRequest): Promise<PaymentResponse> {
@@ -184,6 +190,13 @@ export class ProcessPaymentUseCase {
       try {
         await this.orderRepository.updateStatus(req.orderId, 2); // Em Análise (paid)
       } catch (e) { logger.warn(`Could not update status for order ${req.orderId}`); }
+
+      // Create treatment + sessions (same as boleto/PIX confirmation flow)
+      try {
+        if (this.createSessionsUseCase) {
+          await this.createSessionsUseCase.execute(req.orderId);
+        }
+      } catch (e) { logger.warn(`Could not create sessions for order ${req.orderId}: ${(e as Error).message}`); }
     }
 
     const ccResponse: PaymentResponse = {
@@ -199,6 +212,11 @@ export class ProcessPaymentUseCase {
     // Send confirmation emails (fire-and-forget)
     if (effectiveSuccess) {
       this.sendEmails(req, ccResponse).catch(e => logger.warn(`Email send failed: ${e.message}`));
+
+      // Tokenize and save card for future use if requested
+      if (req.saveCard && req.card?.number) {
+        this.tokenizeAndSaveCard(req).catch(e => logger.warn(`Card save failed: ${(e as Error).message}`));
+      }
     }
 
     return ccResponse;
@@ -478,5 +496,73 @@ export class ProcessPaymentUseCase {
     };
 
     await this.sendEmailUseCase.execute(ctx);
+  }
+
+  /**
+   * Tokenize the card with Cielo and save it in tbCustomerCards for future use.
+   */
+  private async tokenizeAndSaveCard(req: PaymentRequest): Promise<void> {
+    if (!this.cieloGateway || !req.card?.number) return;
+
+    // Resolve customerId from the order if not provided directly
+    let customerId = req.customerId || 0;
+    if (!customerId && req.orderId) {
+      try {
+        const { QueryTypes } = require('sequelize');
+        const rows = await this.sequelize?.query(
+          `SELECT CustomerID FROM tbOrders WHERE ID = :orderId`,
+          { replacements: { orderId: req.orderId }, type: QueryTypes.SELECT },
+        ) as any[];
+        customerId = rows?.[0]?.CustomerID || 0;
+      } catch { /* ignore */ }
+    }
+    if (!customerId) {
+      logger.warn(`Cannot save card: no customerId for order ${req.orderId}`);
+      return;
+    }
+
+    // Tokenize with Cielo
+    const tokenResult = await this.cieloGateway.tokenizeCard({
+      customerName: req.card.holder,
+      cardNumber: req.card.number,
+      holder: req.card.holder,
+      expirationDate: req.card.expirationDate,
+      brand: req.card.brand,
+    });
+
+    if (!tokenResult.cardToken) {
+      logger.warn(`Card tokenization failed for order ${req.orderId}: ${tokenResult.error}`);
+      return;
+    }
+
+    const lastFour = req.card.number.slice(-4);
+    const brand = req.card.brand;
+
+    // Check if card already exists
+    const existing = await CustomerCard.findOne({
+      where: { customerID: customerId, lastFourDigits: lastFour, brand, blocked: false },
+    });
+
+    if (existing) {
+      existing.cardToken = tokenResult.cardToken;
+      existing.holderName = req.card.holder;
+      existing.expirationDate = req.card.expirationDate;
+      existing.dateModified = new Date();
+      await existing.save();
+      logger.info(`Updated saved card for customer ${customerId}: ${brand} ****${lastFour}`);
+    } else {
+      const cardCount = await CustomerCard.count({ where: { customerID: customerId, blocked: false } });
+      await CustomerCard.create({
+        customerID: customerId,
+        cardToken: tokenResult.cardToken,
+        brand,
+        lastFourDigits: lastFour,
+        holderName: req.card.holder,
+        expirationDate: req.card.expirationDate,
+        isDefault: cardCount === 0,
+        alias: `${brand} ****${lastFour}`,
+      });
+      logger.info(`Saved new card for customer ${customerId}: ${brand} ****${lastFour}`);
+    }
   }
 }

@@ -128,8 +128,10 @@ const logger = new Logger('AppModule');
     },
     {
       provide: 'PROCESS_PAYMENT',
-      useFactory: (repo: SequelizeOrderRepository, cielo: CieloGateway | null, inter: BancoInterGateway | null, db: Sequelize, emailUseCase: SendConfirmationEmailUseCase) =>
-        new ProcessPaymentUseCase(repo, cielo, inter, db, emailUseCase),
+      useFactory: (repo: SequelizeOrderRepository, cielo: CieloGateway | null, inter: BancoInterGateway | null, db: Sequelize, emailUseCase: SendConfirmationEmailUseCase) => {
+        const createSessions = new CreateSessionsUseCase(db);
+        return new ProcessPaymentUseCase(repo, cielo, inter, db, emailUseCase, createSessions);
+      },
       inject: ['ORDER_REPOSITORY', 'CIELO_GATEWAY', 'BANCO_INTER_GATEWAY', 'DATABASE', 'SEND_EMAIL'],
     },
     {
