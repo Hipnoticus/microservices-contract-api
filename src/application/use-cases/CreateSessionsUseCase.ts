@@ -97,11 +97,11 @@ export class CreateSessionsUseCase {
     const apptEt = extractEnd(apptHour);
     const [apptHH, apptMM] = apptBt.split(':').map(Number);
 
-    // Find next available business day for the first consultation
-    let apptDate = new Date();
+    // Find the next occurrence of the selected day-of-week for the first consultation
+    const apptDow = Number(order.FirstAppointmentDay) || 1; // 0=Sun, 1=Mon, ... 6=Sat
+    let apptDate = addDays(new Date(), 1); // at least tomorrow
     apptDate.setHours(0, 0, 0, 0);
-    apptDate = addDays(apptDate, 1); // at least tomorrow
-    while (!isBusinessDay(apptDate)) apptDate = addDays(apptDate, 1);
+    apptDate = nextWeekday(apptDate, apptDow);
 
     const apptBegins = new Date(apptDate);
     apptBegins.setHours(apptHH, apptMM, 0, 0);
