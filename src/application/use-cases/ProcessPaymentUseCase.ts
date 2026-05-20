@@ -194,7 +194,10 @@ export class ProcessPaymentUseCase {
       // Create treatment + sessions (same as boleto/PIX confirmation flow)
       try {
         if (this.createSessionsUseCase) {
-          await this.createSessionsUseCase.execute(req.orderId);
+          await this.createSessionsUseCase.execute(req.orderId, {
+            firstAppointmentDate: req.firstAppointmentDay,
+            sessionStartDate: req.sessionDay,
+          });
         }
       } catch (e) { logger.warn(`Could not create sessions for order ${req.orderId}: ${(e as Error).message}`); }
     }

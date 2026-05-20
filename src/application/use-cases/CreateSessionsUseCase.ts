@@ -35,7 +35,7 @@ function extractEnd(t: string): string {
 export class CreateSessionsUseCase {
   constructor(private readonly sequelize: any) {}
 
-  async execute(orderId: number): Promise<number | null> {
+  async execute(orderId: number, overrides?: { firstAppointmentDate?: string; sessionStartDate?: string }): Promise<number | null> {
     const { QueryTypes } = require('sequelize');
 
     // Load order data
@@ -97,11 +97,16 @@ export class CreateSessionsUseCase {
     const apptEt = extractEnd(apptHour);
     const [apptHH, apptMM] = apptBt.split(':').map(Number);
 
-    // Find the next occurrence of the selected day-of-week for the first consultation
-    const apptDow = Number(order.FirstAppointmentDay) || 1; // 0=Sun, 1=Mon, ... 6=Sat
-    let apptDate = addDays(new Date(), 1); // at least tomorrow
-    apptDate.setHours(0, 0, 0, 0);
-    apptDate = nextWeekday(apptDate, apptDow);
+    // Use the actual date from the payment request if available, otherwise find next weekday
+    let apptDate: Date;
+    if (overrides?.firstAppointmentDate && overrides.firstAppointmentDate.match(/^\d{4}-\d{2}-\d{2}/)) {
+      // Parse the actual date (e.g. "2026-05-20")
+      const [y, m, d] = overrides.firstAppointmentDate.split('-').map(Number);
+      apptDate = new Date(y, m - 1, d);
+    } else {
+      const apptDow = Number(order.FirstAppointmentDay) || 1;
+      apptDate = nextWeekday(addDays(new Date(), 1), apptDow);
+    }
 
     const apptBegins = new Date(apptDate);
     apptBegins.setHours(apptHH, apptMM, 0, 0);
@@ -122,16 +127,23 @@ export class CreateSessionsUseCase {
     );
     logger.info(`Created 1ª Consulta for order ${orderId}: ${apptBegins.toISOString()}`);
 
-    // Create recurring sessions (start 30 days from now)
-    const sessionDow = Number(order.SessionDay) || 2;
+    // Create recurring sessions
     const sessionHour = order.SessionHour || 'das 09:00 às 10:00';
     const sBt = extractBegin(sessionHour);
     const sEt = extractEnd(sessionHour);
     const [sHH, sMM] = sBt.split(':').map(Number);
     const [sEHH, sEMM] = sEt.split(':').map(Number);
 
-    const earliest = addDays(new Date(), 30);
-    let current = nextWeekday(earliest, sessionDow);
+    // Use the actual session start date if provided, otherwise 30 days from now on the selected weekday
+    let current: Date;
+    if (overrides?.sessionStartDate && overrides.sessionStartDate.match(/^\d{4}-\d{2}-\d{2}/)) {
+      const [y, m, d] = overrides.sessionStartDate.split('-').map(Number);
+      current = new Date(y, m - 1, d);
+    } else {
+      const sessionDow = Number(order.SessionDay) || 2;
+      const earliest = addDays(new Date(), 30);
+      current = nextWeekday(earliest, sessionDow);
+    }
 
     for (let i = 0; i < sessionCount; i++) {
       const begins = new Date(current);
