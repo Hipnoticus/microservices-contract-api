@@ -31,6 +31,11 @@ function extractBegin(t: string): string {
 function extractEnd(t: string): string {
   const p = t.split(' às '); return p.length > 1 ? p[1] : t;
 }
+/** Format a Date as 'YYYY-MM-DD HH:MM:SS' without timezone conversion (keeps local/BRT time). */
+function formatDateLocal(d: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
 export class CreateSessionsUseCase {
   constructor(private readonly sequelize: any) {}
@@ -120,12 +125,12 @@ export class CreateSessionsUseCase {
       {
         replacements: {
           orderId, clientId: order.CustomerID, treatmentId,
-          dateBegins: apptBegins.toISOString(), dateEnds: apptEnds.toISOString(),
+          dateBegins: formatDateLocal(apptBegins), dateEnds: formatDateLocal(apptEnds),
           value: sessionValue, valueValue: sessionValue * 0.965,
         },
       },
     );
-    logger.info(`Created 1ª Consulta for order ${orderId}: ${apptBegins.toISOString()}`);
+    logger.info(`Created 1ª Consulta for order ${orderId}: ${formatDateLocal(apptBegins)}`);
 
     // Create recurring sessions
     const sessionHour = order.SessionHour || 'das 09:00 às 10:00';
@@ -158,7 +163,7 @@ export class CreateSessionsUseCase {
           replacements: {
             notes: `${i + 1}ª Sessão`,
             orderId, clientId: order.CustomerID, treatmentId,
-            dateBegins: begins.toISOString(), dateEnds: ends.toISOString(),
+            dateBegins: formatDateLocal(begins), dateEnds: formatDateLocal(ends),
             value: sessionValue, valueValue: sessionValue * 0.965,
           },
         },
