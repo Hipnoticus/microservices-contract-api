@@ -121,7 +121,7 @@ export class CreateSessionsUseCase {
 
     await this.sequelize.query(
       `INSERT INTO tbSessions (Name, OrderNumber, ClientID, Treatment, DateBegins, DateEnds, Value, ValueValue, FirstSession, Status, Paid, PaymentType, ConfirmationEmailSent, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
-       VALUES ('Acompanhamento', :orderId, :clientId, :treatmentId, :dateBegins, :dateEnds, :value, :valueValue, 1, '21', 1, 1, 0, 0, GETDATE(), GETDATE(), 1, 1)`,
+       VALUES ('1a Consulta', :orderId, :clientId, :treatmentId, :dateBegins, :dateEnds, :value, :valueValue, 1, '23', 1, 1, 0, 0, GETDATE(), GETDATE(), 1, 1)`,
       {
         replacements: {
           orderId, clientId: order.CustomerID, treatmentId,
