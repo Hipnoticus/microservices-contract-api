@@ -31,15 +31,30 @@ export class PaymentController {
     const order = await this.orderRepository.findById(id);
     if (!order) return { orderId: id, status: 'not_found' };
 
-    // Status 2 = Em Análise (paid), 1 = Pendente (awaiting payment)
-    const paid = order.statusId >= 2;
-    return {
-      orderId: id,
-      status: paid ? 'paid' : 'pending',
-      statusId: order.statusId,
-      paid,
-    };
+    // Already paid — return immediately
+    if (order.statusId >= 2) {
+      return { orderId: id, status: 'paid', statusId: order.statusId, paid: true };
+    }
+
+    // For pending PIX orders, check Banco Inter in real-time (throttled to once per 10s per order)
+    if (this.bancoInterGateway && order.paymentIdentifier && order.paymentMethodId === 2) {
+      const cacheKey = `pix-check-${id}`;
+      const now = Date.now();
+      if (!this.pixCheckCache[cacheKey] || now - this.pixCheckCache[cacheKey] > 10000) {
+        this.pixCheckCache[cacheKey] = now;
+        try {
+          const status = await this.bancoInterGateway.checkPixStatus(order.paymentIdentifier!);
+          if (status.paid) {
+            await this.confirmPayment.execute(id, `realtime:pix:${status.status}`);
+            return { orderId: id, status: 'paid', statusId: 2, paid: true };
+          }
+        } catch (e) { /* non-blocking */ }
+      }
+    }
+
+    return { orderId: id, status: 'pending', statusId: order.statusId, paid: false };
   }
+  private pixCheckCache: Record<string, number> = {};
 
   @Post('confirm/:orderId')
   @ApiOperation({ summary: 'Manually confirm payment for an order (admin/webhook fallback)' })
