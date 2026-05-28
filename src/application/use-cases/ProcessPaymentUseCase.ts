@@ -191,12 +191,14 @@ export class ProcessPaymentUseCase {
         await this.orderRepository.updateStatus(req.orderId, 2); // Em Análise (paid)
       } catch (e) { logger.warn(`Could not update status for order ${req.orderId}`); }
 
-      // Create treatment + sessions (same as boleto/PIX confirmation flow)
+      // Create treatment + sessions — credit card is instant, so confirmNow=true
+      // (mirrors legacy OUTPUT INTO tbSessions behavior)
       try {
         if (this.createSessionsUseCase) {
           await this.createSessionsUseCase.execute(req.orderId, {
             firstAppointmentDate: req.firstAppointmentDay,
             sessionStartDate: req.sessionDay,
+            confirmNow: true,
           });
         }
       } catch (e) { logger.warn(`Could not create sessions for order ${req.orderId}: ${(e as Error).message}`); }
@@ -334,6 +336,17 @@ export class ProcessPaymentUseCase {
     // Send confirmation emails (fire-and-forget)
     if (result.success) {
       this.sendEmails(req, response).catch(e => logger.warn(`Email send failed: ${e.message}`));
+
+      // Reserve schedule slots in tbSchedule (pending payment confirmation)
+      try {
+        if (this.createSessionsUseCase) {
+          await this.createSessionsUseCase.execute(req.orderId, {
+            firstAppointmentDate: req.firstAppointmentDay,
+            sessionStartDate: req.sessionDay,
+            confirmNow: false,
+          });
+        }
+      } catch (e) { logger.warn(`Could not reserve schedule for order ${req.orderId}: ${(e as Error).message}`); }
     }
 
     return response;
@@ -365,6 +378,17 @@ export class ProcessPaymentUseCase {
 
     if (result.success) {
       this.sendEmails(req, pixResponse).catch(e => logger.warn(`Email send failed: ${e.message}`));
+
+      // Reserve schedule slots in tbSchedule (pending payment confirmation)
+      try {
+        if (this.createSessionsUseCase) {
+          await this.createSessionsUseCase.execute(req.orderId, {
+            firstAppointmentDate: req.firstAppointmentDay,
+            sessionStartDate: req.sessionDay,
+            confirmNow: false,
+          });
+        }
+      } catch (e) { logger.warn(`Could not reserve schedule for order ${req.orderId}: ${(e as Error).message}`); }
     }
 
     return pixResponse;

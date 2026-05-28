@@ -43,9 +43,16 @@ export class ConfirmPaymentUseCase {
     await this.orderRepository.updateStatus(orderId, 2);
 
     // Create treatment + sessions (tbTreatments + tbSessions)
+    // Legacy workflow: copy from tbSchedule → tbSessions, delete from tbSchedule
     try {
       if (this.createSessionsUseCase) {
-        await this.createSessionsUseCase.execute(orderId);
+        const confirmed = await this.createSessionsUseCase.confirmSessions(orderId);
+        if (!confirmed) {
+          // No schedule rows found — fall back to creating sessions directly
+          // (handles cases where schedule wasn't created at order time)
+          logger.info(`No schedule found for order ${orderId}, creating sessions directly`);
+          await this.createSessionsUseCase.execute(orderId, { confirmNow: true });
+        }
       }
     } catch (e) {
       logger.error(`Failed to create sessions for order ${orderId}: ${(e as Error).message}`);
