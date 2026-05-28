@@ -423,6 +423,28 @@ export class BancoInterGateway {
   }
 
   /**
+   * Check if a PIX cobrança has been paid.
+   * GET /pix/v2/cob/{txid} — checks the status field.
+   * Banco Inter status values: ATIVA, CONCLUIDA, REMOVIDA_PELO_USUARIO_RECEBEDOR, REMOVIDA_PELO_PSP
+   */
+  async checkPixStatus(txid: string): Promise<{ paid: boolean; status: string }> {
+    try {
+      const token = await this.getToken('cob.read');
+      const data = await this.mtlsRequest(
+        `${this.baseUrl}/pix/v2/cob/${txid}`,
+        'GET',
+        { 'Authorization': `Bearer ${token}` },
+      );
+      logger.info(`PIX status for txid=${txid}: ${JSON.stringify(data).substring(0, 300)}`);
+      const status = (data.status || '').toUpperCase();
+      return { paid: status === 'CONCLUIDA', status };
+    } catch (error) {
+      logger.error(`checkPixStatus error for ${txid}: ${(error as Error).message}`);
+      return { paid: false, status: 'ERROR' };
+    }
+  }
+
+  /**
    * Register a webhook URL with Banco Inter for boleto payment notifications.
    * PUT /cobranca/v2/boletos/webhook
    */

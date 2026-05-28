@@ -88,14 +88,26 @@ export class PaymentPollingService {
 
       for (const order of pendingOrders) {
         try {
-          const nossoNumero = order.Identifier;
-          if (!nossoNumero || nossoNumero.startsWith('TEST-') || nossoNumero.startsWith('static-')) continue;
+          const identifier = order.Identifier;
+          if (!identifier || identifier.startsWith('TEST-') || identifier.startsWith('static-')) continue;
 
-          const status = await this.bancoInterGateway!.checkBoletoStatus(nossoNumero);
+          // FormaPagamento 2 = PIX Banco Inter, 4 = Boleto Banco Inter
+          const isPix = order.FormaPagamento === 2;
 
-          if (status.paid) {
-            logger.info(`Order ${order.ID} (nossoNumero=${nossoNumero}) is PAID — confirming`);
-            await this.confirmPaymentUseCase.execute(order.ID, `polling:${status.situacao}`);
+          if (isPix) {
+            // Check PIX cobrança status by txid
+            const status = await this.bancoInterGateway!.checkPixStatus(identifier);
+            if (status.paid) {
+              logger.info(`Order ${order.ID} (txid=${identifier}) PIX is CONCLUIDA — confirming`);
+              await this.confirmPaymentUseCase.execute(order.ID, `polling:pix:${status.status}`);
+            }
+          } else {
+            // Check boleto status by nossoNumero
+            const status = await this.bancoInterGateway!.checkBoletoStatus(identifier);
+            if (status.paid) {
+              logger.info(`Order ${order.ID} (nossoNumero=${identifier}) is PAID — confirming`);
+              await this.confirmPaymentUseCase.execute(order.ID, `polling:${status.situacao}`);
+            }
           }
         } catch (e) {
           logger.warn(`Error checking order ${order.ID}: ${(e as Error).message}`);
