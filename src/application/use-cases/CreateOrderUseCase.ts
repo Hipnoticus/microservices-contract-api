@@ -65,9 +65,9 @@ export class CreateOrderUseCase {
         statusId: 1, // Pendente (awaiting payment)
         mainGoal: dto.mainGoal,
         paymentMethodId: dto.paymentMethodId,
-        firstAppointmentDay: String(dto.firstAppointmentDay),
-        firstAppointmentHour: dto.firstAppointmentHour,
-        sessionDay: String(dto.sessionDay),
+        firstAppointmentDay: dto.firstAppointmentDay != null ? String(dto.firstAppointmentDay) : null,
+        firstAppointmentHour: dto.firstAppointmentHour || null,
+        sessionDay: dto.sessionDay != null ? String(dto.sessionDay) : null,
         sessionHour: dto.sessionHour,
         total: dto.total,
         installments: dto.installments,
