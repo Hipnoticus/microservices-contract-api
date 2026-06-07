@@ -44,6 +44,23 @@ export class ExternalPaymentController {
     }
   }
 
+  @Post('status')
+  @ApiOperation({ summary: 'Check PIX payment status by txid (Amode polls this)' })
+  async checkStatus(@Body() body: { txid: string }): Promise<{ paid: boolean; status: string }> {
+    if (!this.bancoInterGateway) {
+      return { paid: false, status: 'gateway_not_configured' };
+    }
+    if (!body.txid) {
+      return { paid: false, status: 'missing_txid' };
+    }
+    try {
+      return await this.bancoInterGateway.checkPixStatus(body.txid);
+    } catch (e) {
+      logger.error(`External status check error: ${(e as Error).message}`);
+      return { paid: false, status: 'error' };
+    }
+  }
+
   private async processPix(req: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
     if (!this.bancoInterGateway) {
       return { success: false, error: 'PIX gateway not configured' };
