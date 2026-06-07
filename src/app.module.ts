@@ -26,13 +26,14 @@ import { TreatmentController } from './interfaces/http/controllers/TreatmentCont
 import { NFSeController } from './interfaces/http/controllers/NFSeController';
 import { LeadController } from './interfaces/http/controllers/LeadController';
 import { HealthController } from './interfaces/http/controllers/HealthController';
+import { ExternalPaymentController } from './interfaces/http/controllers/ExternalPaymentController';
 import { initializeCustomerCardModel } from './infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from './shared/logger/Logger';
 
 const logger = new Logger('AppModule');
 
 @Module({
-  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController],
+  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController],
   providers: [
     {
       provide: 'DATABASE',
