@@ -372,7 +372,7 @@ export class BancoInterGateway {
         error: 'Banco Inter certificate not configured (BANCO_INTER_CERT_PATH + KEY_PATH)' };
     }
     try {
-      const token = await this.getToken();
+      const token = await this.getToken('cob.write cob.read pix.write pix.read');
 
       const body = {
         calendario: { expiracao: 3600 },
