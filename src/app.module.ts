@@ -27,13 +27,19 @@ import { NFSeController } from './interfaces/http/controllers/NFSeController';
 import { LeadController } from './interfaces/http/controllers/LeadController';
 import { HealthController } from './interfaces/http/controllers/HealthController';
 import { ExternalPaymentController } from './interfaces/http/controllers/ExternalPaymentController';
+import { GoogleCalendarController, GoogleCalendarContext } from './interfaces/http/controllers/GoogleCalendarController';
+import { GoogleCalendarClient } from './infrastructure/google/GoogleCalendarClient';
+import { GoogleCalendarSyncJob } from './infrastructure/google/GoogleCalendarSyncJob';
+import { TokenCrypto } from './infrastructure/google/TokenCrypto';
+import { GoogleCalendarRepository } from './infrastructure/persistence/repositories/GoogleCalendarRepository';
+import { SyncGoogleCalendarUseCase } from './application/use-cases/SyncGoogleCalendarUseCase';
 import { initializeCustomerCardModel } from './infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from './shared/logger/Logger';
 
 const logger = new Logger('AppModule');
 
 @Module({
-  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController],
+  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController],
   providers: [
     {
       provide: 'DATABASE',
@@ -151,6 +157,41 @@ const logger = new Logger('AppModule');
         return service;
       },
       inject: ['DATABASE', 'BANCO_INTER_GATEWAY', 'CONFIRM_PAYMENT'],
+    },
+    {
+      // One-way agenda -> Google Calendar sync. Without credentials the endpoints answer 503 and the job stays off.
+      provide: 'GCAL_CONTEXT',
+      useFactory: (db: Sequelize): GoogleCalendarContext => {
+        const repo = new GoogleCalendarRepository(db);
+        const clientId = process.env.GCAL_OAUTH_CLIENT_ID || '';
+        const clientSecret = process.env.GCAL_OAUTH_CLIENT_SECRET || '';
+        const redirectUri = process.env.GCAL_OAUTH_REDIRECT_URI
+          || 'https://api.hipnoticus.com.br/contract-service/google-calendar/oauth/callback';
+        let crypto: TokenCrypto | null = null;
+        try {
+          crypto = process.env.GCAL_TOKEN_ENC_KEY ? new TokenCrypto(process.env.GCAL_TOKEN_ENC_KEY) : null;
+        } catch (e) {
+          logger.warn(`Google Calendar: ${(e as Error).message}`);
+        }
+        if (!clientId || !clientSecret || !crypto) {
+          logger.warn('Google Calendar OAuth client not configured — agenda sync disabled');
+          return { repo, client: null, crypto: null, sync: null };
+        }
+        const client = new GoogleCalendarClient({ clientId, clientSecret, redirectUri });
+        const pastDays = parseInt(process.env.GCAL_SYNC_PAST_DAYS || '30', 10) || 30;
+        logger.info(`Google Calendar sync configured (redirect ${redirectUri}, past ${pastDays} days)`);
+        return { repo, client, crypto, sync: new SyncGoogleCalendarUseCase(repo, client, crypto, pastDays) };
+      },
+      inject: ['DATABASE'],
+    },
+    {
+      provide: 'GCAL_SYNC_JOB',
+      useFactory: (ctx: GoogleCalendarContext) => {
+        const job = new GoogleCalendarSyncJob(ctx.sync, ctx.repo, parseInt(process.env.GCAL_SYNC_INTERVAL_MS || '300000', 10) || 300000);
+        job.start();
+        return job;
+      },
+      inject: ['GCAL_CONTEXT'],
     },
   ],
 })
