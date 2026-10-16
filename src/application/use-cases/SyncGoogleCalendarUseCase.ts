@@ -19,7 +19,7 @@ const logger = new Logger('SyncGoogleCalendarUseCase');
 export const GCAL_CALENDAR_NAME = 'Hipnoticus Agenda';
 export const GCAL_TIME_ZONE = 'America/Sao_Paulo';
 export const GCAL_REVOKED_MESSAGE = 'Acesso revogado pelo Google. Reconecte a conta.';
-const FOOTER = 'Sincronizado automaticamente pelo Hipnoticus. Alterações feitas aqui serão sobrescritas.';
+const FOOTER = 'Sincronizado automaticamente pela Hipnoticus. Alterações feitas aqui serão sobrescritas.';
 
 export interface SyncResult {
   created: number;
