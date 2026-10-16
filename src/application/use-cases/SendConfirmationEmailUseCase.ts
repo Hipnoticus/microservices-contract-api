@@ -238,7 +238,11 @@ export class SendConfirmationEmailUseCase {
     try {
       const response = await fetch(`${this.emailApiBaseUrl}/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // EmailAPI only lets service clients e-mail customers (EMAIL_API_CLIENT_TOKENS on its side)
+          ...(process.env.EMAIL_API_TOKEN ? { 'X-Internal-Token': process.env.EMAIL_API_TOKEN } : {}),
+        },
         body: JSON.stringify({ from, fromName: 'Hipnoticus', to, toName, replyTo: from, subject, content }),
       });
       if (!response.ok) {
