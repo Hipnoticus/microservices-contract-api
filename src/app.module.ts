@@ -35,12 +35,44 @@ import { GoogleCalendarRepository } from './infrastructure/persistence/repositor
 import { SyncGoogleCalendarUseCase } from './application/use-cases/SyncGoogleCalendarUseCase';
 import { initializeCustomerCardModel } from './infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from './shared/logger/Logger';
+import { AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController } from './interfaces/http/controllers/AdminControllers';
+import { SessionAdminService } from './application/admin/SessionAdminService';
+import { SessionEmailService } from './application/admin/SessionEmailService';
+import { AdminDataService } from './application/admin/AdminDataService';
+import { SessionReminderJob } from './infrastructure/jobs/SessionReminderJob';
 
 const logger = new Logger('AppModule');
 
 @Module({
-  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController],
+  controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController,
+    AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController],
   providers: [
+    // ---- Moses admin area (staff JWT verified in ContractAPI itself, see interfaces/http/auth/StaffAuth.ts) ----
+    {
+      provide: 'SESSION_ADMIN',
+      useFactory: (db: Sequelize) => new SessionAdminService(db),
+      inject: ['DATABASE'],
+    },
+    {
+      provide: 'SESSION_EMAIL',
+      useFactory: (db: Sequelize) => new SessionEmailService(db, process.env.EMAIL_API_URL || 'http://hipnoticus-email-api:8100'),
+      inject: ['DATABASE'],
+    },
+    {
+      provide: 'ADMIN_DATA',
+      useFactory: (db: Sequelize) => new AdminDataService(db),
+      inject: ['DATABASE'],
+    },
+    {
+      // cron.asp replacement; off unless SESSION_REMINDER_JOB=on
+      provide: 'SESSION_REMINDER_JOB',
+      useFactory: (db: Sequelize, email: SessionEmailService) => {
+        const job = new SessionReminderJob(db, email);
+        job.start();
+        return job;
+      },
+      inject: ['DATABASE', 'SESSION_EMAIL'],
+    },
     {
       provide: 'DATABASE',
       useFactory: async () => {
