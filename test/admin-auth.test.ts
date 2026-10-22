@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createHmac } from 'crypto';
-import { verifyStaffToken } from '../src/interfaces/http/auth/StaffAuth';
+import { verifyCaller, verifyStaffToken } from '../src/interfaces/http/auth/StaffAuth';
 import { addDaysWallClock, renumberNotes, wallClock } from '../src/application/admin/SessionAdminService';
 
 const KEY = 'test-secret-test-secret-test-secret-42';
@@ -26,6 +26,18 @@ describe('verifyStaffToken', () => {
     expect(verifyStaffToken(token({ sub: '7', type: 'user', exp: future }, KEY, 'none'), KEY)).toBeNull();
     expect(verifyStaffToken(undefined, KEY)).toBeNull();
     expect(verifyStaffToken('Basic YWRtaW46YWRtaW4=', KEY)).toBeNull();
+  });
+});
+
+describe('verifyCaller', () => {
+  test('reads the CustomerAPI nameidentifier claim', () => {
+    const c = verifyCaller(token({ 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier': '43', type: 'customer', exp: future }), KEY);
+    expect(c).toEqual({ kind: 'customer', id: 43 });
+  });
+  test('staff wins, forged and expired lose', () => {
+    expect(verifyCaller(token({ sub: '7', type: 'user', perms: [3], exp: future }), KEY)?.kind).toBe('staff');
+    expect(verifyCaller(token({ sub: '43', type: 'customer', exp: 1 }), KEY)).toBeNull();
+    expect(verifyCaller(token({ sub: '43', type: 'customer', exp: future }, 'another-secret-another-secret-42xx'), KEY)).toBeNull();
   });
 });
 

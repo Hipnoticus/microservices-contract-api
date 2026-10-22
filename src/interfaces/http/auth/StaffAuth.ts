@@ -61,6 +61,44 @@ export function verifyStaffToken(authorization: string | undefined, key = secret
   }
 }
 
+const NAMEID = 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier';
+
+/** Who is calling: a CustomerAPI customer, a UserAPI staff member, or nobody (invalid / absent token). */
+export type Caller = { kind: 'customer'; id: number } | { kind: 'staff'; user: StaffUser } | null;
+
+export function verifyCaller(authorization: string | undefined, key = secret()): Caller {
+  const staff = verifyStaffToken(authorization, key);
+  if (staff) return { kind: 'staff', user: staff };
+  if (!key || key.length < 32 || !authorization?.startsWith('Bearer ')) return null;
+  const parts = authorization.slice(7).trim().split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const header = JSON.parse(b64urlDecode(parts[0]).toString('utf8'));
+    if (header?.alg !== 'HS256') return null;
+    const expected = createHmac('sha256', key).update(`${parts[0]}.${parts[1]}`).digest();
+    const given = b64urlDecode(parts[2]);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+    const p = JSON.parse(b64urlDecode(parts[1]).toString('utf8'));
+    if (p?.type !== 'customer' || !p.exp || Date.now() / 1000 >= Number(p.exp)) return null;
+    const id = parseInt(String(p[NAMEID] ?? p.sub), 10);
+    return Number.isFinite(id) && id > 0 ? { kind: 'customer', id } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 401/403 unless the caller is that customer or a staff member holding Clientes (module 3). For ids carried in the
+ * request body, which the gateway's path rules cannot see.
+ */
+export function requireCustomerOrStaff(authorization: string | undefined, customerId: number): Caller {
+  const caller = verifyCaller(authorization);
+  if (!caller) throw new HttpException({ error: 'Autenticação necessária.' }, HttpStatus.UNAUTHORIZED);
+  if (caller.kind === 'customer' && caller.id === customerId) return caller;
+  if (caller.kind === 'staff' && caller.user.perms.includes(MODULE.CLIENTES)) return caller;
+  throw new HttpException({ error: 'Sem permissão para este cliente.' }, HttpStatus.FORBIDDEN);
+}
+
 /**
  * Guard factory: StaffGuard() needs any staff token; StaffGuard(6, 7) needs one of those modules.
  * The verified user is put on request.staff.

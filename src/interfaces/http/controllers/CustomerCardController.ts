@@ -1,11 +1,16 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Inject } from '@nestjs/common';
-import { Sequelize, QueryTypes } from 'sequelize';
+import { Controller, Get, Post, Put, Delete, Param, Body, Inject, Headers, HttpException, HttpStatus } from '@nestjs/common';
+import { Sequelize } from 'sequelize';
 import { CustomerCard } from '../../../infrastructure/persistence/models/CustomerCardModel';
 import { CieloGateway } from '../../../infrastructure/payment/CieloGateway';
 import { Logger } from '../../../shared/logger/Logger';
+import { requireCustomerOrStaff } from '../auth/StaffAuth';
 
 const logger = new Logger('CustomerCardController');
 
+/**
+ * Saved cards. Every action checks the token here: the card owner (customer token) or staff with Clientes.
+ * The customer id is in the body or behind a card id, which the gateway's path rules cannot see.
+ */
 @Controller('cards')
 export class CustomerCardController {
   constructor(
@@ -13,8 +18,15 @@ export class CustomerCardController {
     @Inject('CIELO_GATEWAY') private readonly cielo: CieloGateway | null,
   ) {}
 
+  private async ownerOf(cardId: string): Promise<number> {
+    const card = await CustomerCard.findOne({ where: { id: parseInt(cardId, 10) || 0 } });
+    if (!card) throw new HttpException({ error: 'Cartão não encontrado.' }, HttpStatus.NOT_FOUND);
+    return Number(card.customerID);
+  }
+
   @Get('customer/:customerId')
-  async getCardsByCustomer(@Param('customerId') customerId: string) {
+  async getCardsByCustomer(@Headers('authorization') auth: string, @Param('customerId') customerId: string) {
+    requireCustomerOrStaff(auth, parseInt(customerId, 10));
     const cards = await CustomerCard.findAll({
       where: { customerID: parseInt(customerId, 10), blocked: false },
       order: [['isDefault', 'DESC'], ['dateCreated', 'DESC']],
@@ -31,7 +43,7 @@ export class CustomerCardController {
   }
 
   @Post('tokenize')
-  async tokenizeCard(@Body() body: {
+  async tokenizeCard(@Headers('authorization') auth: string, @Body() body: {
     customerId: number;
     cardNumber: string;
     holderName: string;
@@ -39,12 +51,12 @@ export class CustomerCardController {
     brand: string;
     alias?: string;
   }) {
+    requireCustomerOrStaff(auth, Number(body?.customerId));
     if (!this.cielo) {
       return { success: false, error: 'Cielo gateway not configured' };
     }
 
     try {
-      // Call Cielo tokenization API
       const tokenResult = await this.cielo.tokenizeCard({
         customerName: body.holderName,
         cardNumber: body.cardNumber,
@@ -59,13 +71,12 @@ export class CustomerCardController {
 
       const lastFour = body.cardNumber.slice(-4);
 
-      // Check if card already exists (same last 4 digits + brand + customer)
+      // Same last 4 digits + brand + customer: refresh the token instead of duplicating the card
       const existing = await CustomerCard.findOne({
         where: { customerID: body.customerId, lastFourDigits: lastFour, brand: body.brand, blocked: false },
       });
 
       if (existing) {
-        // Update the token
         existing.cardToken = tokenResult.cardToken;
         existing.holderName = body.holderName;
         existing.expirationDate = body.expirationDate;
@@ -76,7 +87,6 @@ export class CustomerCardController {
         return { success: true, cardId: existing.id, message: 'Cartão atualizado com sucesso' };
       }
 
-      // Check if this is the first card — make it default
       const cardCount = await CustomerCard.count({ where: { customerID: body.customerId, blocked: false } });
 
       const card = await CustomerCard.create({
@@ -99,26 +109,19 @@ export class CustomerCardController {
   }
 
   @Put(':id/default')
-  async setDefault(@Param('id') id: string, @Body() body: { customerId: number }) {
-    // Remove default from all cards for this customer
-    await CustomerCard.update(
-      { isDefault: false, dateModified: new Date() },
-      { where: { customerID: body.customerId } }
-    );
-    // Set the selected card as default
-    await CustomerCard.update(
-      { isDefault: true, dateModified: new Date() },
-      { where: { id: parseInt(id, 10), customerID: body.customerId } }
-    );
+  async setDefault(@Headers('authorization') auth: string, @Param('id') id: string) {
+    // The owner comes from the card itself, not from the body
+    const customerId = await this.ownerOf(id);
+    requireCustomerOrStaff(auth, customerId);
+    await CustomerCard.update({ isDefault: false, dateModified: new Date() }, { where: { customerID: customerId } });
+    await CustomerCard.update({ isDefault: true, dateModified: new Date() }, { where: { id: parseInt(id, 10), customerID: customerId } });
     return { success: true };
   }
 
   @Delete(':id')
-  async deleteCard(@Param('id') id: string) {
-    await CustomerCard.update(
-      { blocked: true, dateModified: new Date() },
-      { where: { id: parseInt(id, 10) } }
-    );
+  async deleteCard(@Headers('authorization') auth: string, @Param('id') id: string) {
+    requireCustomerOrStaff(auth, await this.ownerOf(id));
+    await CustomerCard.update({ blocked: true, dateModified: new Date() }, { where: { id: parseInt(id, 10) } });
     return { success: true };
   }
 }
