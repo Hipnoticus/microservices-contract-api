@@ -4,7 +4,7 @@ import { verifyCaller, verifyStaffToken } from '../src/interfaces/http/auth/Staf
 import { addDaysWallClock, parseSlots, renumberNotes, wallClock } from '../src/application/admin/SessionAdminService';
 
 describe('configured slots (tbConfig schedule.*)', () => {
-  test('blocked weekdays and times are left out, times are padded', () => {
+  test('staff see every slot; blocked only marks what customers cannot book; times are padded', () => {
     const rows = Object.entries({
       'schedule.sessions.weekdays.slot1': '2', 'schedule.sessions.weekdays.slot1.blocked': '0',
       'schedule.sessions.weekdays.slot2': '3', 'schedule.sessions.weekdays.slot2.blocked': '1',
@@ -14,8 +14,9 @@ describe('configured slots (tbConfig schedule.*)', () => {
       'schedule.appointments.times.slot1.begin': '20:00', 'schedule.appointments.times.slot1.end': '21:00',
     }).map(([Name, Value]) => ({ Name, Value }));
     expect(parseSlots(rows)).toEqual([
-      { kind: 'session', begin: '09:30', end: '10:30', weekdays: [2] },
-      { kind: 'appointment', begin: '20:00', end: '21:00', weekdays: [1] },
+      { kind: 'session', begin: '09:30', end: '10:30', weekdays: [2, 3], customerBlockedWeekdays: [3] },
+      { kind: 'session', begin: '14:00', end: '15:00', weekdays: [2, 3], customerBlockedWeekdays: [2, 3] },
+      { kind: 'appointment', begin: '20:00', end: '21:00', weekdays: [1], customerBlockedWeekdays: [] },
     ]);
   });
 });

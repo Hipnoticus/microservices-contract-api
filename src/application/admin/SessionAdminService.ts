@@ -36,7 +36,11 @@ export interface SessionInput {
 }
 
 export type SlotKind = 'session' | 'appointment';
-export interface ConfiguredSlot { kind: SlotKind; begin: string; end: string; weekdays: number[] }
+export interface ConfiguredSlot {
+  kind: SlotKind; begin: string; end: string; weekdays: number[];
+  /** Weekdays on which customers cannot self-book this slot (blocked weekday or blocked time). Staff always can. */
+  customerBlockedWeekdays: number[];
+}
 
 /** '9:30' -> '09:30'; anything that is not H:MM / HH:MM -> null. */
 export function hhmm(v: string | null | undefined): string | null {
@@ -50,7 +54,10 @@ export function hhmm(v: string | null | undefined): string | null {
  * (schedule.sessions.* for weekly sessions, schedule.appointments.* for the 1ª consulta / follow-ups):
  *   <prefix>.weekdays.slotN = weekday (0 = Sunday), <prefix>.weekdays.slotN.blocked = 1 to switch it off
  *   <prefix>.times.slotN.begin / .end = HH:MM,      <prefix>.times.slotN.blocked = 1 to switch it off
- * Blocked weekdays and times are left out, so changing a slot in Configurações changes the Agenda.
+ *
+ * ".blocked" only closes a weekday or time to CUSTOMER self-scheduling (Contratar in Moses, the legacy Cliente).
+ * The therapist's Agenda shows every configured slot, blocked or not, as ControleWeb does; each slot says which
+ * weekdays customers cannot book (customerBlockedWeekdays) so the Agenda can mark them.
  */
 export function parseSlots(rows: { Name: string; Value: string }[]): ConfiguredSlot[] {
   const cfg: Record<string, string> = {};
@@ -58,17 +65,26 @@ export function parseSlots(rows: { Name: string; Value: string }[]): ConfiguredS
   const out: ConfiguredSlot[] = [];
   for (const [kind, prefix] of [['session', 'schedule.sessions'], ['appointment', 'schedule.appointments']] as const) {
     const weekdays: number[] = [];
+    const blockedDays: number[] = [];
     for (let i = 1; i <= 7; i++) {
       const v = cfg[`${prefix}.weekdays.slot${i}`];
-      if (v === undefined || cfg[`${prefix}.weekdays.slot${i}.blocked`] === '1') continue;
+      if (v === undefined) continue;
       const d = parseInt(v, 10);
-      if (d >= 0 && d <= 6 && !weekdays.includes(d)) weekdays.push(d);
+      if (!(d >= 0 && d <= 6) || weekdays.includes(d)) continue;
+      weekdays.push(d);
+      if (cfg[`${prefix}.weekdays.slot${i}.blocked`] === '1') blockedDays.push(d);
     }
+    if (!weekdays.length) continue;
     for (let i = 1; i <= 10; i++) {
       const begin = hhmm(cfg[`${prefix}.times.slot${i}.begin`]);
       const end = hhmm(cfg[`${prefix}.times.slot${i}.end`]);
-      if (!begin || !end || cfg[`${prefix}.times.slot${i}.blocked`] === '1') continue;
-      if (weekdays.length) out.push({ kind, begin, end, weekdays: [...weekdays].sort() });
+      if (!begin || !end) continue;
+      const timeBlocked = cfg[`${prefix}.times.slot${i}.blocked`] === '1';
+      const sorted = [...weekdays].sort();
+      out.push({
+        kind, begin, end, weekdays: sorted,
+        customerBlockedWeekdays: timeBlocked ? sorted : [...blockedDays].sort(),
+      });
     }
   }
   return out;
