@@ -35,16 +35,44 @@ export interface SessionInput {
   packageSize?: number;    // create only: N weekly sessions
 }
 
-/** ControleWeb's fixed weekday slots (calendar.asp). Slots 6 and 7 are the follow-up slots. */
-export const CALENDAR_SLOTS = [
-  { begin: '09:30', end: '10:30' },
-  { begin: '11:00', end: '12:00' },
-  { begin: '14:00', end: '15:00' },
-  { begin: '15:30', end: '16:30' },
-  { begin: '17:00', end: '18:00' },
-  { begin: '19:00', end: '20:00', followUp: true },
-  { begin: '20:00', end: '21:00', followUp: true },
-];
+export type SlotKind = 'session' | 'appointment';
+export interface ConfiguredSlot { kind: SlotKind; begin: string; end: string; weekdays: number[] }
+
+/** '9:30' -> '09:30'; anything that is not H:MM / HH:MM -> null. */
+export function hhmm(v: string | null | undefined): string | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((v || '').replace(/<\/?p>/g, '').trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+  return `${m[1].padStart(2, '0')}:${m[2]}`;
+}
+
+/**
+ * The bookable slots, from tbConfig: the same keys the Contratar flow and the legacy client site read
+ * (schedule.sessions.* for weekly sessions, schedule.appointments.* for the 1ª consulta / follow-ups):
+ *   <prefix>.weekdays.slotN = weekday (0 = Sunday), <prefix>.weekdays.slotN.blocked = 1 to switch it off
+ *   <prefix>.times.slotN.begin / .end = HH:MM,      <prefix>.times.slotN.blocked = 1 to switch it off
+ * Blocked weekdays and times are left out, so changing a slot in Configurações changes the Agenda.
+ */
+export function parseSlots(rows: { Name: string; Value: string }[]): ConfiguredSlot[] {
+  const cfg: Record<string, string> = {};
+  for (const r of rows) if (r?.Name) cfg[r.Name] = String(r.Value ?? '').replace(/<\/?p>/g, '').trim();
+  const out: ConfiguredSlot[] = [];
+  for (const [kind, prefix] of [['session', 'schedule.sessions'], ['appointment', 'schedule.appointments']] as const) {
+    const weekdays: number[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const v = cfg[`${prefix}.weekdays.slot${i}`];
+      if (v === undefined || cfg[`${prefix}.weekdays.slot${i}.blocked`] === '1') continue;
+      const d = parseInt(v, 10);
+      if (d >= 0 && d <= 6 && !weekdays.includes(d)) weekdays.push(d);
+    }
+    for (let i = 1; i <= 10; i++) {
+      const begin = hhmm(cfg[`${prefix}.times.slot${i}.begin`]);
+      const end = hhmm(cfg[`${prefix}.times.slot${i}.end`]);
+      if (!begin || !end || cfg[`${prefix}.times.slot${i}.blocked`] === '1') continue;
+      if (weekdays.length) out.push({ kind, begin, end, weekdays: [...weekdays].sort() });
+    }
+  }
+  return out;
+}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
@@ -77,6 +105,14 @@ export function renumberNotes(notes: string, n: number): string {
 
 export class SessionAdminService {
   constructor(private readonly db: Sequelize) {}
+
+  async configuredSlots(): Promise<ConfiguredSlot[]> {
+    const rows = await this.db.query<any>(
+      `SELECT Name, CAST(Value AS varchar(200)) AS Value FROM tbConfig
+       WHERE (Name LIKE 'schedule.sessions.%' OR Name LIKE 'schedule.appointments.%') AND ISNULL(Blocked, 0) = 0`,
+      { type: QueryTypes.SELECT });
+    return parseSlots(rows);
+  }
 
   async statuses() {
     return this.db.query(`

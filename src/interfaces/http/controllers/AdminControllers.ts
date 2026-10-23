@@ -3,7 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { QueryTypes, Sequelize } from 'sequelize';
 import { randomBytes } from 'crypto';
 import { MODULE, StaffGuard, requireModule, staffOf } from '../auth/StaffAuth';
-import { CALENDAR_SLOTS, SessionAdminService, SessionInput } from '../../../application/admin/SessionAdminService';
+import { SessionAdminService, SessionInput } from '../../../application/admin/SessionAdminService';
 import { SessionEmailService } from '../../../application/admin/SessionEmailService';
 import { AdminDataService } from '../../../application/admin/AdminDataService';
 import { GoogleCalendarContext } from './GoogleCalendarController';
@@ -32,7 +32,8 @@ export class AdminAgendaController {
 
   @Get('session-statuses') statuses() { return this.sessions.statuses(); }
   @Get('session-payment-types') paymentTypes() { return this.sessions.paymentTypes(); }
-  @Get('calendar/slots') slots() { return { weekdays: [1, 2, 3, 4, 5], slots: CALENDAR_SLOTS }; }
+  /** Bookable slots from tbConfig schedule.* (see parseSlots). */
+  @Get('calendar/slots') async slots() { return { slots: await this.sessions.configuredSlots() }; }
 
   @Get('calendar')
   calendar(@Query('from') from: string, @Query('to') to: string, @Query('source') source: string, @Query('therapistId') therapistId?: string) {

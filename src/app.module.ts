@@ -40,12 +40,14 @@ import { SessionAdminService } from './application/admin/SessionAdminService';
 import { SessionEmailService } from './application/admin/SessionEmailService';
 import { AdminDataService } from './application/admin/AdminDataService';
 import { SessionReminderJob } from './infrastructure/jobs/SessionReminderJob';
+import { ContratarPrefillController } from './interfaces/http/controllers/ContratarPrefillController';
 
 const logger = new Logger('AppModule');
 
 @Module({
   controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController,
-    AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController],
+    AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController,
+    ContratarPrefillController],
   providers: [
     // ---- Moses admin area (staff JWT verified in ContractAPI itself, see interfaces/http/auth/StaffAuth.ts) ----
     {
