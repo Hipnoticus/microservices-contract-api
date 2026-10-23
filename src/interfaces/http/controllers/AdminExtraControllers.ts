@@ -4,6 +4,10 @@ import { MODULE, StaffGuard, requireModule, staffOf } from '../auth/StaffAuth';
 import { QuestionnaireAdminService } from '../../../application/admin/QuestionnaireAdminService';
 import { ClientActionsService } from '../../../application/admin/ClientActionsService';
 import { ContentAdminService } from '../../../application/admin/ContentAdminService';
+import { AuditService } from '../../../application/admin/AuditService';
+import { timingSafeEqual } from 'crypto';
+import { Headers } from '@nestjs/common';
+import { QueryTypes, Sequelize } from 'sequelize';
 
 function id(raw: string): number {
   const n = /^\d{1,9}$/.test(raw || '') ? parseInt(raw, 10) : NaN;
@@ -28,6 +32,45 @@ export class AdminQuestionnaireController {
   save(@Req() req: any, @Param('id') rawId: string, @Body() body: any) {
     requireModule(staffOf(req), MODULE.QUESTIONARIOS);
     return this.svc.saveQuestionnaire(id(rawId), body, staffOf(req).id);
+  }
+
+  @Post('questionnaires')
+  createQ(@Req() req: any, @Body() body: any) {
+    requireModule(staffOf(req), MODULE.QUESTIONARIOS);
+    return this.svc.createQuestionnaire(body, staffOf(req).id);
+  }
+
+  @Put('questionnaires/:id/order')
+  order(@Req() req: any, @Param('id') rawId: string, @Body() body: { ids: number[] }) {
+    requireModule(staffOf(req), MODULE.QUESTIONARIOS);
+    return this.svc.reorder(id(rawId), body?.ids);
+  }
+
+  @Post('questionnaires/:id/questions')
+  addQuestion(@Req() req: any, @Param('id') rawId: string, @Body() body: any) {
+    requireModule(staffOf(req), MODULE.QUESTIONARIOS);
+    return this.svc.addQuestion(id(rawId), body, staffOf(req).id);
+  }
+
+  @Put('questionnaire-questions/:id')
+  updateQuestion(@Req() req: any, @Param('id') rawId: string, @Body() body: any) {
+    requireModule(staffOf(req), MODULE.QUESTIONARIOS);
+    return this.svc.updateQuestion(id(rawId), body, staffOf(req).id);
+  }
+
+  @Delete('questionnaire-questions/:id')
+  deleteQuestion(@Req() req: any, @Param('id') rawId: string) {
+    requireModule(staffOf(req), MODULE.QUESTIONARIOS);
+    return this.svc.deleteQuestion(id(rawId), staffOf(req).id);
+  }
+
+  @Get('questionnaire-scales')
+  scales(@Req() req: any) { requireModule(staffOf(req), MODULE.QUESTIONARIOS); return this.svc.scales(); }
+
+  @Post('questionnaire-scales')
+  createScale(@Req() req: any, @Body() body: any) {
+    requireModule(staffOf(req), MODULE.QUESTIONARIOS);
+    return this.svc.createScale(body, staffOf(req).id);
   }
 
   @Get('questionnaire-statuses') statuses() { return this.svc.statuses(); }
@@ -153,5 +196,53 @@ export class AdminContentController {
   // ---- NFS-e
   @Delete('nfse/:id') deleteNfse(@Req() req: any, @Param('id') rawId: string) {
     requireModule(staffOf(req), MODULE.NFSE); return this.svc.deleteNfseDraft(id(rawId), staffOf(req).id);
+  }
+}
+
+/** Logs (ControleWeb pseudo-module -1) and small lookups any staff screen needs. */
+@ApiTags('Admin')
+@Controller('admin')
+@UseGuards(StaffGuard())
+export class AdminLogsController {
+  constructor(
+    @Inject('AUDIT') private readonly audit: AuditService,
+    @Inject('DATABASE') private readonly db: Sequelize,
+  ) {}
+
+  @Get('audit')
+  list(@Req() req: any, @Query() q: any) {
+    requireModule(staffOf(req), MODULE.LOGS);
+    return this.audit.list(q);
+  }
+
+  /** Names for a list of customer ids (the Mensagens page labels conversations with them). */
+  @Get('customer-names')
+  async names(@Query('ids') raw: string) {
+    const ids = String(raw || '').split(',').map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n > 0).slice(0, 500);
+    if (!ids.length) return [];
+    return this.db.query(`
+      SELECT ID AS id, CallName AS callName, LTRIM(RTRIM(ISNULL(FirstName, '') + ' ' + ISNULL(LastName, ''))) AS name, Email AS email
+      FROM tbCustomers WHERE ID IN (:ids)`, { replacements: { ids }, type: QueryTypes.SELECT });
+  }
+}
+
+/**
+ * Entries from the gateway's audit filter. Not reachable from outside (the gateway denies /contract-service/internal),
+ * and it also needs the shared AUDIT_TOKEN.
+ */
+@ApiTags('Internal')
+@Controller('internal')
+export class InternalAuditController {
+  constructor(@Inject('AUDIT') private readonly audit: AuditService) {}
+
+  @Post('audit')
+  record(@Headers('x-internal-token') token: string, @Body() body: any) {
+    const expected = process.env.AUDIT_TOKEN || '';
+    const given = Buffer.from(String(token || ''));
+    const want = Buffer.from(expected);
+    if (expected.length < 16 || given.length !== want.length || !timingSafeEqual(given, want)) {
+      throw new HttpException({ error: 'Não autorizado.' }, HttpStatus.UNAUTHORIZED);
+    }
+    return this.audit.record(Array.isArray(body) ? body : Array.isArray(body?.entries) ? body.entries : []);
   }
 }

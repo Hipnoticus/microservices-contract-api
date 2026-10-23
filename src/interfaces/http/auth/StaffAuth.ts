@@ -32,6 +32,8 @@ export const MODULE = {
   NFSE: 15,
   TRATAMENTOS: 16,
   CONFIGURACOES: 9999,
+  /** ControleWeb pseudo-module "Logs". */
+  LOGS: -1,
 } as const;
 
 function secret(): string {

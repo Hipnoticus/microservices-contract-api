@@ -41,7 +41,8 @@ import { SessionEmailService } from './application/admin/SessionEmailService';
 import { AdminDataService } from './application/admin/AdminDataService';
 import { SessionReminderJob } from './infrastructure/jobs/SessionReminderJob';
 import { ContratarPrefillController } from './interfaces/http/controllers/ContratarPrefillController';
-import { AdminQuestionnaireController, AdminClientActionsController, AdminContentController } from './interfaces/http/controllers/AdminExtraControllers';
+import { AdminQuestionnaireController, AdminClientActionsController, AdminContentController, AdminLogsController, InternalAuditController } from './interfaces/http/controllers/AdminExtraControllers';
+import { AuditService } from './application/admin/AuditService';
 import { QuestionnaireAdminService } from './application/admin/QuestionnaireAdminService';
 import { ClientActionsService } from './application/admin/ClientActionsService';
 import { ContentAdminService } from './application/admin/ContentAdminService';
@@ -51,9 +52,19 @@ const logger = new Logger('AppModule');
 @Module({
   controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController,
     AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController,
-    AdminQuestionnaireController, AdminClientActionsController, AdminContentController,
+    AdminQuestionnaireController, AdminClientActionsController, AdminContentController, AdminLogsController, InternalAuditController,
     ContratarPrefillController],
   providers: [
+    {
+      provide: 'AUDIT',
+      useFactory: (db: Sequelize) => {
+        const svc = new AuditService(db);
+        svc.ensureTable().catch(() => { /* retried on first write */ });
+        svc.startPruning();
+        return svc;
+      },
+      inject: ['DATABASE'],
+    },
     { provide: 'QUESTIONNAIRE_ADMIN', useFactory: (db: Sequelize) => new QuestionnaireAdminService(db), inject: ['DATABASE'] },
     {
       provide: 'CLIENT_ACTIONS',

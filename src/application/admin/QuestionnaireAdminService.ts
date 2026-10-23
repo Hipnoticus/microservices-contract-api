@@ -66,23 +66,182 @@ export class QuestionnaireAdminService {
     const options = types.length ? await this.q<any>(`
       SELECT ID AS id, CAST(Answer AS nvarchar(max)) AS answer, Value AS value, Points AS points, AnswerType AS answerType
       FROM tbQuestionnairesAnswers WHERE AnswerType IN (:types) AND ISNULL(Blocked, 0) = 0 ORDER BY AnswerType, ID`, { types }) : [];
+    const [{ n }] = await this.q<any>('SELECT COUNT(*) AS n FROM tbQuestionnairesAnswersRecords WHERE Questionnaire = :id', { id });
     return {
       ...rows[0],
+      hasAnswers: Number(n) > 0,
       questions: questions.map((x) => ({ ...x, options: options.filter((o) => o.answerType === x.answerType) })),
     };
   }
 
-  /** ControleWeb edits Name, ShortName, Description and Blocked through its generic lister; questions are seeded. */
+  private fields(body: any) {
+    const name = String(body?.name ?? '').trim().slice(0, 255);
+    // tbQuestionnaires.ShortName is nvarchar(20)
+    const shortName = String(body?.shortName ?? '').trim().slice(0, 20);
+    if (!name || !shortName) bad('Nome e sigla são obrigatórios.');
+    return { name, shortName, description: String(body?.description ?? '').slice(0, 4000), blocked: body?.blocked ? 1 : 0 };
+  }
+
+  private async uniqueShortName(shortName: string, exceptId: number | null) {
+    const rows = await this.q('SELECT ID FROM tbQuestionnaires WHERE ShortName = :shortName AND ID <> :exceptId', { shortName, exceptId: exceptId ?? 0 });
+    if (rows.length) bad(`Já existe um questionário com a sigla ${shortName}.`);
+  }
+
+  /** ControleWeb edits Name, ShortName, Description and Blocked through its generic lister. */
   async saveQuestionnaire(id: number, body: any, staffId: number) {
     await this.questionnaire(id);
-    const name = String(body?.name ?? '').trim().slice(0, 255);
-    const shortName = String(body?.shortName ?? '').trim().slice(0, 50);
-    if (!name || !shortName) bad('Nome e sigla são obrigatórios.');
+    const f = this.fields(body);
+    await this.uniqueShortName(f.shortName, id);
     await this.db.query(`
       UPDATE tbQuestionnaires SET Name = :name, ShortName = :shortName, Description = :description, Blocked = :blocked,
              DateModified = GETDATE(), ModifiedBy = :staffId WHERE ID = :id`,
-      { replacements: { id, name, shortName, description: String(body?.description ?? '').slice(0, 4000), blocked: body?.blocked ? 1 : 0, staffId } });
+      { replacements: { id, ...f, staffId } });
     return { id };
+  }
+
+  /** New questionnaire (ControleWeb's questionnaires_add.asp was an empty page; questions were seeded by SQL). */
+  async createQuestionnaire(body: any, staffId: number) {
+    const f = this.fields(body);
+    await this.uniqueShortName(f.shortName, null);
+    const rows = await this.q<any>(`
+      INSERT INTO tbQuestionnaires (Name, ShortName, Description, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+      OUTPUT inserted.ID AS id VALUES (:name, :shortName, :description, :blocked, GETDATE(), GETDATE(), :staffId, :staffId)`, { ...f, staffId });
+    return { id: Number(rows[0].id) };
+  }
+
+  // ---- questions and answer scales ----------------------------------------------------------------------------------
+  //
+  // A scale is an AnswerType: the set of tbQuestionnairesAnswers rows a question offers. Scales are shared between
+  // questionnaires (and scored by the clinical instruments), so existing ones are read-only here; new ones can be made.
+  // Answers point at a question by its PriorityOrder, so once a questionnaire has answers its questions can no
+  // longer be reordered or deleted (only reworded, blocked, or appended).
+
+  async scales() {
+    const rows = await this.q<any>(`
+      SELECT a.AnswerType AS answerType, a.ID AS id, CAST(a.Answer AS nvarchar(max)) AS answer, a.Value AS value, a.Points AS points,
+             (SELECT COUNT(*) FROM tbQuestionnairesQuestions q WHERE q.AnswerType = a.AnswerType) AS usedBy
+      FROM tbQuestionnairesAnswers a WHERE ISNULL(a.Blocked, 0) = 0 ORDER BY a.AnswerType, a.ID`);
+    const map = new Map<number, any>();
+    for (const r of rows) {
+      const t = Number(r.answerType);
+      if (!map.has(t)) map.set(t, { answerType: t, usedBy: Number(r.usedBy), options: [] });
+      map.get(t).options.push({ id: r.id, answer: r.answer, value: r.value, points: r.points });
+    }
+    return [...map.values()];
+  }
+
+  /** tbQuestionnairesAnswers.ID is not an identity column, so ids are allocated under a table lock. */
+  async createScale(body: any, staffId: number) {
+    const options = Array.isArray(body?.options) ? body.options : [];
+    const clean = options.map((o: any, i: number) => ({
+      answer: String(o?.answer ?? '').trim().slice(0, 255),
+      points: Number.isFinite(Number(o?.points)) ? Math.trunc(Number(o.points)) : i,
+    })).filter((o: any) => o.answer);
+    if (clean.length < 2 || clean.length > 15) bad('Uma escala precisa de 2 a 15 opções.');
+    const t = await this.db.transaction();
+    try {
+      const [{ type, nextId }] = await this.db.query<any>(`
+        SELECT ISNULL(MAX(AnswerType), 0) + 1 AS type, ISNULL(MAX(ID), 0) + 1 AS nextId FROM tbQuestionnairesAnswers WITH (TABLOCKX, HOLDLOCK)`,
+        { type: QueryTypes.SELECT, transaction: t });
+      let id = Number(nextId);
+      for (const o of clean) {
+        await this.db.query(`
+          INSERT INTO tbQuestionnairesAnswers (ID, Answer, AnswerType, Value, Points, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+          VALUES (:id, :answer, :type, :value, :points, 0, GETDATE(), GETDATE(), :staffId, :staffId)`,
+          { replacements: { id: id++, answer: o.answer, type, value: String(o.points), points: o.points, staffId }, transaction: t });
+      }
+      await t.commit();
+      return { answerType: Number(type) };
+    } catch (e) {
+      await t.rollback();
+      throw e;
+    }
+  }
+
+  private async ensureScale(answerType: number) {
+    const rows = await this.q('SELECT TOP 1 ID FROM tbQuestionnairesAnswers WHERE AnswerType = :answerType AND ISNULL(Blocked, 0) = 0', { answerType });
+    if (!rows.length) bad('Escala de respostas inválida.');
+  }
+
+  private questionText(body: any): string {
+    const text = String(body?.question ?? '').trim().slice(0, 1000);
+    if (!text) bad('O texto da pergunta é obrigatório.');
+    return text;
+  }
+
+  async addQuestion(questionnaireId: number, body: any, staffId: number) {
+    await this.questionnaire(questionnaireId);
+    const answerType = parseInt(String(body?.answerType), 10);
+    await this.ensureScale(answerType);
+    const rows = await this.q<any>(`
+      INSERT INTO tbQuestionnairesQuestions (Question, Questionnaire, PriorityOrder, AnswerType, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+      OUTPUT inserted.ID AS id, inserted.PriorityOrder AS [order]
+      VALUES (:question, :qid, (SELECT ISNULL(MAX(PriorityOrder), 0) + 1 FROM tbQuestionnairesQuestions WHERE Questionnaire = :qid),
+              :answerType, 0, GETDATE(), GETDATE(), :staffId, :staffId)`,
+      { question: this.questionText(body), qid: questionnaireId, answerType, staffId });
+    return { id: Number(rows[0].id), order: Number(rows[0].order) };
+  }
+
+  private async question(id: number) {
+    const rows = await this.q<any>(`
+      SELECT q.ID AS id, q.Questionnaire AS questionnaireId, q.AnswerType AS answerType,
+             (SELECT COUNT(*) FROM tbQuestionnairesAnswersRecords a WHERE a.Questionnaire = q.Questionnaire) AS answers
+      FROM tbQuestionnairesQuestions q WHERE q.ID = :id`, { id });
+    if (!rows.length) notFound('Pergunta');
+    return { ...rows[0], answered: Number(rows[0].answers) > 0 };
+  }
+
+  async updateQuestion(id: number, body: any, staffId: number) {
+    const q = await this.question(id);
+    const answerType = body?.answerType !== undefined ? parseInt(String(body.answerType), 10) : Number(q.answerType);
+    if (answerType !== Number(q.answerType)) {
+      if (q.answered) bad('O questionário já tem respostas: a escala desta pergunta não pode mudar.');
+      await this.ensureScale(answerType);
+    }
+    await this.db.query(`
+      UPDATE tbQuestionnairesQuestions SET Question = :question, AnswerType = :answerType, Blocked = :blocked,
+             DateModified = GETDATE(), ModifiedBy = :staffId WHERE ID = :id`,
+      { replacements: { id, question: this.questionText(body), answerType, blocked: body?.blocked ? 1 : 0, staffId } });
+    return { id };
+  }
+
+  async deleteQuestion(id: number, staffId: number) {
+    const q = await this.question(id);
+    if (q.answered) {
+      await this.db.query('UPDATE tbQuestionnairesQuestions SET Blocked = 1, DateModified = GETDATE(), ModifiedBy = :staffId WHERE ID = :id',
+        { replacements: { id, staffId } });
+      return { id, blocked: true };
+    }
+    const t = await this.db.transaction();
+    try {
+      await this.db.query('DELETE FROM tbQuestionnairesQuestions WHERE ID = :id', { replacements: { id }, transaction: t });
+      await this.renumber(q.questionnaireId, null, t);
+      await t.commit();
+    } catch (e) { await t.rollback(); throw e; }
+    return { id, deleted: true };
+  }
+
+  /** New order for an unanswered questionnaire: the given question ids, in order. */
+  async reorder(questionnaireId: number, ids: number[]) {
+    const d = await this.questionnaire(questionnaireId);
+    if (d.hasAnswers) bad('O questionário já tem respostas: a ordem das perguntas não pode mudar.');
+    const own = new Set(d.questions.map((x: any) => Number(x.id)));
+    if (!Array.isArray(ids) || ids.length !== own.size || !ids.every((i) => own.has(Number(i)))) bad('Lista de perguntas inválida.');
+    const t = await this.db.transaction();
+    try {
+      await this.renumber(questionnaireId, ids.map(Number), t);
+      await t.commit();
+    } catch (e) { await t.rollback(); throw e; }
+    return { id: questionnaireId };
+  }
+
+  private async renumber(questionnaireId: number, ids: number[] | null, transaction: any) {
+    const order = ids ?? (await this.db.query<any>('SELECT ID FROM tbQuestionnairesQuestions WHERE Questionnaire = :qid ORDER BY PriorityOrder, ID',
+      { replacements: { qid: questionnaireId }, type: QueryTypes.SELECT, transaction })).map((r) => Number(r.ID));
+    for (let i = 0; i < order.length; i++) {
+      await this.db.query('UPDATE tbQuestionnairesQuestions SET PriorityOrder = :o WHERE ID = :id AND Questionnaire = :qid',
+        { replacements: { o: i + 1, id: order[i], qid: questionnaireId }, transaction });
+    }
   }
 
   async statuses() {
