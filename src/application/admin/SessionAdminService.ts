@@ -42,6 +42,9 @@ export interface ConfiguredSlot {
   customerBlockedWeekdays: number[];
 }
 
+/** Last slot end of the agenda day when tbConfig 'schedule.agenda.end' is absent (ControleWeb's 20:00-21:00). */
+export const AGENDA_DAY_END = '21:00';
+
 /** '9:30' -> '09:30'; anything that is not H:MM / HH:MM -> null. */
 export function hhmm(v: string | null | undefined): string | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec((v || '').replace(/<\/?p>/g, '').trim());
@@ -122,12 +125,19 @@ export function renumberNotes(notes: string, n: number): string {
 export class SessionAdminService {
   constructor(private readonly db: Sequelize) {}
 
+  /**
+   * Agenda slots: every configured slot (see parseSlots) that ends by the end of the agenda day. ControleWeb's
+   * calendar never offered anything after 20:00-21:00, so a configured 21:00-22:00 (closed to customers too) is not
+   * a slot. The limit is tbConfig 'schedule.agenda.end' (HH:MM), 21:00 when absent.
+   */
   async configuredSlots(): Promise<ConfiguredSlot[]> {
     const rows = await this.db.query<any>(
       `SELECT Name, CAST(Value AS varchar(200)) AS Value FROM tbConfig
-       WHERE (Name LIKE 'schedule.sessions.%' OR Name LIKE 'schedule.appointments.%') AND ISNULL(Blocked, 0) = 0`,
+       WHERE (Name LIKE 'schedule.sessions.%' OR Name LIKE 'schedule.appointments.%' OR Name = 'schedule.agenda.end')
+         AND ISNULL(Blocked, 0) = 0`,
       { type: QueryTypes.SELECT });
-    return parseSlots(rows);
+    const end = hhmm(rows.find((r) => r.Name === 'schedule.agenda.end')?.Value) || AGENDA_DAY_END;
+    return parseSlots(rows).filter((s) => s.end <= end && s.begin < s.end);
   }
 
   async statuses() {
