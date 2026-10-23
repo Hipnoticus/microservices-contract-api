@@ -62,13 +62,14 @@ export class AdminDataService {
              c.CPFCNPJ AS cpf, c.Sex AS sex, CONVERT(varchar(10), c.DateOfBirth, 126) AS dateOfBirth,
              c.PhoneNumber AS phone, c.PhoneNumber2 AS phone2, c.GroupID AS groupId, g.Name AS groupName,
              c.MainGoal AS mainGoalId, i.Name AS mainGoalName, CAST(ISNULL(c.Blocked, 0) AS bit) AS blocked,
+             CAST(ISNULL(c.Newsletter, 0) AS bit) AS newsletter, CAST(ISNULL(c.TestUser, 0) AS bit) AS testUser,
              CONVERT(varchar(19), c.DateCreated, 126) AS dateCreated
       FROM tbCustomers c LEFT JOIN tbCustomersGroups g ON g.ID = c.GroupID LEFT JOIN tbIssues i ON i.ID = c.MainGoal
       WHERE c.ID = :id`, { id });
     if (!rows.length) notFound('Cliente');
     const [addresses, orders, treatments, sessions, reserved] = await Promise.all([
       this.q(`SELECT ID AS id, Address AS address, Number AS number, Address2 AS address2, Town AS town, City AS city,
-                     State AS state, Zip AS zip, Country AS country, CAST(ISNULL(MainAddress, 0) AS bit) AS main
+                     State AS state, Zip AS zip, Country AS country, Reference AS reference, CAST(ISNULL(MainAddress, 0) AS bit) AS main
               FROM tbCustomersAddresses WHERE CustomerID = :id AND ISNULL(Blocked, 0) = 0 ORDER BY MainAddress DESC, ID`, { id }),
       this.q(`SELECT o.ID AS id, o.OrderStatusID AS statusId, os.Name AS statusName, o.Total AS total, o.MainGoal AS mainGoal,
                      fp.Name AS paymentMethod, CONVERT(varchar(19), o.DateCreated, 126) AS dateCreated
@@ -82,7 +83,8 @@ export class AdminDataService {
               WHERE t.Customer = :id AND ISNULL(t.Blocked, 0) = 0 ORDER BY t.ID DESC`, { id }),
       this.q(`SELECT TOP 200 s.ID AS id, s.Name AS name, CONVERT(varchar(19), s.DateBegins, 126) AS begins,
                      LTRIM(RTRIM(s.Status)) AS status, ss.Name AS statusName, ss.Color AS color,
-                     CAST(ISNULL(s.Paid, 0) AS bit) AS paid, CAST(ISNULL(s.FirstSession, 0) AS bit) AS firstSession
+                     CAST(ISNULL(s.Paid, 0) AS bit) AS paid, CAST(ISNULL(s.FirstSession, 0) AS bit) AS firstSession,
+                     CAST(s.Notes AS nvarchar(max)) AS notes
               FROM tbSessions s LEFT JOIN tbSessionsStatus ss ON CAST(ss.ID AS varchar(10)) = LTRIM(RTRIM(s.Status))
               WHERE s.ClientID = :id ORDER BY s.DateBegins DESC`, { id }),
       this.q(`SELECT s.ID AS id, s.Name AS name, CONVERT(varchar(19), s.DateBegins, 126) AS begins, LTRIM(RTRIM(s.Status)) AS status,

@@ -41,14 +41,26 @@ import { SessionEmailService } from './application/admin/SessionEmailService';
 import { AdminDataService } from './application/admin/AdminDataService';
 import { SessionReminderJob } from './infrastructure/jobs/SessionReminderJob';
 import { ContratarPrefillController } from './interfaces/http/controllers/ContratarPrefillController';
+import { AdminQuestionnaireController, AdminClientActionsController, AdminContentController } from './interfaces/http/controllers/AdminExtraControllers';
+import { QuestionnaireAdminService } from './application/admin/QuestionnaireAdminService';
+import { ClientActionsService } from './application/admin/ClientActionsService';
+import { ContentAdminService } from './application/admin/ContentAdminService';
 
 const logger = new Logger('AppModule');
 
 @Module({
   controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController,
     AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController,
+    AdminQuestionnaireController, AdminClientActionsController, AdminContentController,
     ContratarPrefillController],
   providers: [
+    { provide: 'QUESTIONNAIRE_ADMIN', useFactory: (db: Sequelize) => new QuestionnaireAdminService(db), inject: ['DATABASE'] },
+    {
+      provide: 'CLIENT_ACTIONS',
+      useFactory: (db: Sequelize) => new ClientActionsService(db, process.env.EMAIL_API_URL || 'http://hipnoticus-email-api:8100'),
+      inject: ['DATABASE'],
+    },
+    { provide: 'CONTENT_ADMIN', useFactory: (db: Sequelize) => new ContentAdminService(db), inject: ['DATABASE'] },
     // ---- Moses admin area (staff JWT verified in ContractAPI itself, see interfaces/http/auth/StaffAuth.ts) ----
     {
       provide: 'SESSION_ADMIN',
