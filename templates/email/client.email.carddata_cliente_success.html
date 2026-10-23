@@ -1,0 +1,39 @@
+<!--hx-->
+<tr><td align="center" class="hx-pad" style="background-color:#1c1412;padding:4px 40px 44px;font-family:Helvetica,Arial,sans-serif;">
+  <div style="font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#e8a593;">Pedido recebido</div>
+  <h1 class="hx-h1" style="margin:10px 0 8px;font-family:Georgia,'Times New Roman',serif;font-weight:normal;font-size:30px;line-height:38px;color:#ffffff;">Obrigado, [NOME_CLIENTE].</h1>
+  <div style="font-size:15px;line-height:23px;color:#cbbcb2;">Recebemos seu pedido. Abaixo est&atilde;o os hor&aacute;rios escolhidos e o resumo do pagamento.</div>
+</td></tr><tr><td class="hx-pad" style="padding:30px 40px 0;font-family:Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+    <td class="hx-col" width="50%" valign="top" style="padding:0 6px 12px 0;">
+      <div style="background:#faf6f2;border-radius:14px;padding:18px 20px;">
+        <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#bf311a;font-weight:bold;">1&ordf; consulta</div>
+        <div style="font-family:Georgia,'Times New Roman',serif;font-size:22px;line-height:30px;color:#1c1412;margin-top:4px;">[CLIENTE_PRIMEIRACONSULTA_DIA]</div>
+        <div style="font-size:14px;color:#5c4f46;">[CLIENTE_PRIMEIRACONSULTA_HORA]</div>
+      </div>
+    </td>
+    <td class="hx-col" width="50%" valign="top" style="padding:0 0 12px 6px;">
+      <div style="background:#faf6f2;border-radius:14px;padding:18px 20px;">
+        <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#bf311a;font-weight:bold;">Sess&otilde;es semanais</div>
+        <div style="font-family:Georgia,'Times New Roman',serif;font-size:22px;line-height:30px;color:#1c1412;margin-top:4px;">[CLIENTE_SESSAO_DIA]</div>
+        <div style="font-size:14px;color:#5c4f46;">[CLIENTE_SESSAO_HORA]</div>
+      </div>
+    </td>
+  </tr></table>
+  <div style="font-size:13px;line-height:20px;color:#8a7d72;">As sess&otilde;es acontecem toda semana, no mesmo dia e hor&aacute;rio.</div>
+</td></tr><tr><td class="hx-pad" style="padding:22px 40px 0;font-family:Helvetica,Arial,sans-serif;">
+  <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#a8998e;font-weight:bold;margin-bottom:10px;">Seu pedido</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f1e6df;border-radius:14px;font-size:14px;line-height:21px;">
+    <tr><td width="40%" style="padding:10px 16px;color:#8a7d72;border-bottom:1px solid #f6eee9;">Itens</td><td style="padding:10px 16px;color:#1c1412;border-bottom:1px solid #f6eee9;">[CLIENTE_PEDIDO_ITENS]</td></tr><tr><td width="40%" style="padding:10px 16px;color:#8a7d72;">Objetivo priorit&aacute;rio</td><td style="padding:10px 16px;color:#1c1412;">[CLIENTE_OBJETIVO_PRIORITARIO]</td></tr>
+  </table>
+</td></tr><tr><td class="hx-pad" style="padding:22px 40px 0;font-family:Helvetica,Arial,sans-serif;">
+  <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#a8998e;font-weight:bold;margin-bottom:10px;">Pagamento &middot; cart&atilde;o de cr&eacute;dito</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f1e6df;border-radius:14px;font-size:14px;line-height:21px;">
+    <tr><td width="40%" style="padding:10px 16px;color:#8a7d72;border-bottom:1px solid #f6eee9;">Valor</td><td style="padding:10px 16px;color:#1c1412;border-bottom:1px solid #f6eee9;"><strong>[CLIENTE_CARTAO_VALOR]</strong></td></tr><tr><td width="40%" style="padding:10px 16px;color:#8a7d72;border-bottom:1px solid #f6eee9;">Bandeira</td><td style="padding:10px 16px;color:#1c1412;border-bottom:1px solid #f6eee9;">[CLIENTE_CARTAO_BANDEIRA]</td></tr><tr><td width="40%" style="padding:10px 16px;color:#8a7d72;border-bottom:1px solid #f6eee9;">Nome no cart&atilde;o</td><td style="padding:10px 16px;color:#1c1412;border-bottom:1px solid #f6eee9;">[CLIENTE_CARTAO_NOME_NO_CARTAO]</td></tr><tr><td width="40%" style="padding:10px 16px;color:#8a7d72;">Status</td><td style="padding:10px 16px;color:#1c1412;">[CLIENTE_STATUS_TRANSACAO]</td></tr>
+  </table>
+</td></tr><tr><td align="center" class="hx-pad" style="padding:28px 40px 0;font-family:Helvetica,Arial,sans-serif;">
+  <a href="https://moses.hipnoticus.com.br/agenda" style="display:inline-block;background:#bf311a;color:#ffffff;font-weight:bold;font-size:15px;text-decoration:none;padding:16px 34px;border-radius:999px;">Ver minha agenda</a>
+  <div style="margin-top:12px;font-size:13px;line-height:20px;color:#8a7d72;">Voc&ecirc; receber&aacute; a confirma&ccedil;&atilde;o de cada sess&atilde;o por e-mail.</div>
+</td></tr><tr><td class="hx-pad" style="padding:18px 40px 34px;font-family:Helvetica,Arial,sans-serif;;font-size:12px;line-height:19px;color:#a8998e;">
+  Pedido enviado em [DATA_HORA_ENVIO] &middot; IP [IP_CLIENTE]
+</td></tr>

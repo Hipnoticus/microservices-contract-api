@@ -57,9 +57,11 @@ export class SessionEmailService {
       .replace(/\[DATA_COMPLETA\]/g, when.date)
       .replace(/\[HORA\]/g, when.time)
       .replace(/\[VALOR_BRUTO\]/g, brl(s.value))
+      // "Ver detalhes" opens the session in Moses (login first, then back to it)
+      .replace(/\[ID_SESSAO\]/g, String(s.id))
       .replace(/\[s\*o\*m\*a\]/g, '+');
+    // EmailAPI wraps every message in the shared Hipnoticus layout (logo, footer, year)
     const html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><title></title></head>'
-      + '<link rel="stylesheet" type="text/css" href="https://www2.hipnoterapia.org/lib/css/email_confirmacao_sessao.css" />'
       + `<body>${body}</body></html>`;
     const subject = `Hipnoticus :: Sessão Agendada para ${when.weekday}, dia ${when.date} às ${when.time}`;
 
