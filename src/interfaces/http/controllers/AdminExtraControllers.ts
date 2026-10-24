@@ -215,6 +215,21 @@ export class AdminLogsController {
     return this.audit.list(q);
   }
 
+  /** Retention chosen in the Logs page: { years: null } = keep indefinitely. ?preview=N counts what N years would delete. */
+  @Get('audit-retention')
+  async retention(@Req() req: any, @Query('preview') preview?: string) {
+    requireModule(staffOf(req), MODULE.LOGS);
+    const r = await this.audit.retention();
+    const years = preview ? AuditService.parseYears(preview) : null;
+    return { ...r, wouldDelete: years ? await this.audit.olderThan(years) : 0 };
+  }
+
+  @Put('audit-retention')
+  setRetention(@Req() req: any, @Body() body: { years: number | string | null }) {
+    requireModule(staffOf(req), MODULE.LOGS);
+    return this.audit.setRetention(body?.years ?? null, staffOf(req).id);
+  }
+
   /** Names for a list of customer ids (the Mensagens page labels conversations with them). */
   @Get('customer-names')
   async names(@Query('ids') raw: string) {

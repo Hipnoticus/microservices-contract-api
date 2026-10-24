@@ -35,10 +35,14 @@ export function subjectCustomer(path: string, query: string, actorType: string, 
   return actorType === 'customer' && actorId ? actorId : null;
 }
 
+/** tbConfig key holding how many years of log are kept. Missing or empty = kept indefinitely (the default). */
+export const RETENTION_KEY = 'audit.retention.years';
+const MAX_YEARS = 100;
+
 export class AuditService {
   private ready: Promise<void> | null = null;
 
-  constructor(private readonly db: Sequelize, private readonly retentionDays = parseInt(process.env.AUDIT_RETENTION_DAYS || '730', 10) || 730) {}
+  constructor(private readonly db: Sequelize) {}
 
   /** Creates tbAuditLog the first time (dev and prod stay in step without a manual migration). */
   ensureTable(): Promise<void> {
@@ -109,17 +113,76 @@ export class AuditService {
     return { stored: rows.length };
   }
 
-  /** Daily retention prune (AUDIT_RETENTION_DAYS, default 730). */
+  // ---- retention (chosen in the Logs page; nothing is deleted unless a number of years is set) --------------------
+
+  /** Years kept, or null for indefinitely. */
+  async retentionYears(): Promise<number | null> {
+    const rows = await this.db.query<any>(`SELECT TOP 1 CAST(Value AS varchar(20)) AS v FROM tbConfig WHERE Name = :name ORDER BY ID`,
+      { replacements: { name: RETENTION_KEY }, type: QueryTypes.SELECT });
+    const n = parseInt(String(rows[0]?.v ?? '').trim(), 10);
+    return Number.isInteger(n) && n >= 1 && n <= MAX_YEARS ? n : null;
+  }
+
+  async retention() {
+    await this.ensureTable();
+    const years = await this.retentionYears();
+    const [stats] = await this.db.query<any>(`
+      SELECT COUNT_BIG(*) AS total, CONVERT(varchar(19), MIN(DateCreated), 126) AS oldest FROM tbAuditLog`, { type: QueryTypes.SELECT });
+    return { years, total: Number(stats?.total || 0), oldest: stats?.oldest || null };
+  }
+
+  /** How many entries a given retention would delete now. */
+  async olderThan(years: number): Promise<number> {
+    await this.ensureTable();
+    const [r] = await this.db.query<any>('SELECT COUNT_BIG(*) AS n FROM tbAuditLog WHERE DateCreated < DATEADD(year, 0 - :years, SYSDATETIME())',
+      { replacements: { years }, type: QueryTypes.SELECT });
+    return Number(r?.n || 0);
+  }
+
+  static parseYears(raw: unknown): number | null {
+    if (raw === null || raw === undefined || raw === '' || raw === 0 || raw === '0') return null;
+    const s = String(raw).trim();
+    if (!/^\d{1,3}$/.test(s)) throw new HttpException({ error: 'Informe um número inteiro de anos (ou indefinido).' }, HttpStatus.BAD_REQUEST);
+    const n = parseInt(s, 10);
+    if (n < 1 || n > MAX_YEARS) throw new HttpException({ error: `O período deve ser de 1 a ${MAX_YEARS} anos.` }, HttpStatus.BAD_REQUEST);
+    return n;
+  }
+
+  async setRetention(raw: unknown, staffId: number) {
+    const years = AuditService.parseYears(raw);
+    const value = years === null ? '' : String(years);
+    const exists = await this.db.query<any>('SELECT ID FROM tbConfig WHERE Name = :name', { replacements: { name: RETENTION_KEY }, type: QueryTypes.SELECT });
+    if (exists.length) {
+      await this.db.query('UPDATE tbConfig SET Value = :value, DateModified = GETDATE(), ModifiedBy = :staff WHERE Name = :name',
+        { replacements: { name: RETENTION_KEY, value, staff: String(staffId) } });
+    } else {
+      await this.db.query(`
+        INSERT INTO tbConfig (Name, Value, Type, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+        VALUES (:name, :value, 'Texto', 0, GETDATE(), GETDATE(), :staff, :staff)`,
+        { replacements: { name: RETENTION_KEY, value, staff: String(staffId) } });
+    }
+    const deleted = years === null ? 0 : await this.prune();
+    return { years, deleted };
+  }
+
+  /** Deletes what is older than the chosen retention; nothing when it is indefinite. Returns how many went. */
+  async prune(): Promise<number> {
+    await this.ensureTable();
+    const years = await this.retentionYears();
+    if (years === null) return 0;
+    const total = await this.olderThan(years);
+    // In batches, so a first run over a large table does not hold one long lock
+    for (let i = 0; i < 500 && (await this.olderThan(years)) > 0; i++) {
+      await this.db.query('DELETE TOP (20000) FROM tbAuditLog WHERE DateCreated < DATEADD(year, 0 - :years, SYSDATETIME())',
+        { replacements: { years } });
+    }
+    if (total) logger.info(`Audit retention ${years} year(s): ${total} entries deleted`);
+    return total;
+  }
+
+  /** Daily check of the retention chosen in the Logs page. */
   startPruning() {
-    const run = async () => {
-      try {
-        await this.ensureTable();
-        await this.db.query('DELETE TOP (50000) FROM tbAuditLog WHERE DateCreated < DATEADD(day, -:days, SYSDATETIME())',
-          { replacements: { days: this.retentionDays } });
-      } catch (e) {
-        logger.warn(`Audit prune failed: ${(e as Error).message}`);
-      }
-    };
+    const run = () => this.prune().catch((e) => logger.warn(`Audit prune failed: ${(e as Error).message}`));
     setTimeout(run, 60_000).unref?.();
     setInterval(run, 24 * 3600_000).unref?.();
   }
