@@ -40,6 +40,7 @@ import { SessionAdminService } from './application/admin/SessionAdminService';
 import { SessionEmailService } from './application/admin/SessionEmailService';
 import { AdminDataService } from './application/admin/AdminDataService';
 import { SessionReminderJob } from './infrastructure/jobs/SessionReminderJob';
+import { VideoSessionController } from './interfaces/http/controllers/VideoSessionController';
 import { ContratarPrefillController } from './interfaces/http/controllers/ContratarPrefillController';
 import { AdminQuestionnaireController, AdminClientActionsController, AdminContentController, AdminLogsController, InternalAuditController } from './interfaces/http/controllers/AdminExtraControllers';
 import { AuditService } from './application/admin/AuditService';
@@ -53,7 +54,7 @@ const logger = new Logger('AppModule');
   controllers: [OrderController, PackageController, PaymentMethodController, OrderStatusController, PaymentController, ConfigController, ScheduleController, CustomerCardController, TreatmentController, NFSeController, LeadController, HealthController, ExternalPaymentController, GoogleCalendarController,
     AdminAgendaController, AdminCustomerController, AdminTreatmentController, AdminSettingsController, AdminHomeController,
     AdminQuestionnaireController, AdminClientActionsController, AdminContentController, AdminLogsController, InternalAuditController,
-    ContratarPrefillController],
+    ContratarPrefillController, VideoSessionController],
   providers: [
     {
       provide: 'AUDIT',
