@@ -12,6 +12,7 @@
  *   Deposit:  client.email.depositodata / client.email.depositodata_cliente_success
  */
 import { Logger } from '../../shared/logger/Logger';
+import { properName } from '../../shared/names';
 
 const logger = new Logger('SendConfirmationEmailUseCase');
 
@@ -155,7 +156,7 @@ export class SendConfirmationEmailUseCase {
     let result = template;
 
     // Customer data
-    result = result.replace(/\[NOME_CLIENTE\]/g, ctx.customerName);
+    result = result.replace(/\[NOME_CLIENTE\]/g, properName(ctx.customerName) || ctx.customerName);
     result = result.replace(/\[CPF_CLIENTE\]/g, ctx.customerCpf);
     result = result.replace(/\[DATA_NASCIMENTO_CLIENTE\]/g, ctx.customerBirthDate || '');
     result = result.replace(/\[EMAIL_CLIENTE\]/g, ctx.customerEmail);

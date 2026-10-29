@@ -3,6 +3,7 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import { QueryTypes, Sequelize } from 'sequelize';
 import { htmlShell, sendEmail } from './EmailApiClient';
 import { Logger } from '../../shared/logger/Logger';
+import { properName } from '../../shared/names';
 
 const logger = new Logger('ClientActionsService');
 
@@ -152,7 +153,7 @@ export class ClientActionsService {
       SELECT TOP 1 op.ProductName AS name, o.Total AS total FROM tbOrders o
       LEFT JOIN tbOrdersProducts op ON op.OrderID = o.ID
       WHERE o.CustomerID = :customerId AND o.OrderStatusID = 3 ORDER BY o.ID DESC`, { customerId });
-    const name = c.callName || c.firstName || 'Cliente';
+    const name = properName(c.callName || c.firstName) || 'Cliente';
     const marks: Record<string, string> = {
       NOME_CLIENTE: name, EMAIL_CLIENTE: c.email, CPF_CLIENTE: c.cpf || '', DATA_NASCIMENTO_CLIENTE: c.dateOfBirth || '',
       TELEFONE_CLIENTE: c.phone || '',

@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { QueryTypes, Sequelize } from 'sequelize';
 import { Logger } from '../../shared/logger/Logger';
+import { properName } from '../../shared/names';
 
 const logger = new Logger('SessionEmailService');
 
@@ -50,7 +51,7 @@ export class SessionEmailService {
     }
 
     const when = parts(s.begins);
-    const name = s.callName || s.firstName || 'Cliente';
+    const name = properName(s.callName || s.firstName) || 'Cliente';
     const body = tpl[0].value
       .replace(/\[NOME_CLIENTE\]/g, name)
       .replace(/\[DIA_SEMANA\]/g, when.weekday)
