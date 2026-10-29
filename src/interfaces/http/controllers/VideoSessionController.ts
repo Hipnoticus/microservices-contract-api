@@ -10,6 +10,12 @@ const logger = new Logger('VideoSessionController');
 const EARLY_MIN = 15;
 const LATE_MIN = 60;
 
+/** Customer e-mails exempt from the time window (VIDEO_ANYTIME_EMAILS, comma separated; default: the owner's). */
+function anytimeEmails(): Set<string> {
+  const raw = process.env.VIDEO_ANYTIME_EMAILS ?? 'punkore8@gmail.com,henrique@hipnoterapia.org';
+  return new Set(raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean));
+}
+
 /**
  * Video room access for a session (tbSessions.ID). The same room, "session-<id>", is joined by the customer from the
  * Moses client area (/agenda/sessao/:id) and by the therapist from the therapist area (/terapeuta/agenda/sessao/:id).
@@ -31,7 +37,7 @@ export class VideoSessionController {
     const rows = await this.db.query<any>(`
       SELECT s.ID AS id, s.ClientID AS clientId, ISNULL(s.Blocked, 0) AS blocked,
              CONVERT(varchar(19), s.DateBegins, 126) AS begins, CONVERT(varchar(19), s.DateEnds, 126) AS ends,
-             c.CallName AS callName, c.FirstName AS firstName
+             c.CallName AS callName, c.FirstName AS firstName, c.Email AS email
       FROM tbSessions s LEFT JOIN tbCustomers c ON c.ID = s.ClientID WHERE s.ID = :id`,
       { replacements: { id }, type: QueryTypes.SELECT });
     const s = rows[0];
@@ -43,7 +49,8 @@ export class VideoSessionController {
     if (caller.kind === 'customer') {
       if (Number(s.clientId) !== caller.id) throw new HttpException({ error: 'Sessão não encontrada.' }, HttpStatus.NOT_FOUND);
       if (Number(s.blocked)) throw new HttpException({ error: 'Esta sessão foi cancelada.' }, HttpStatus.FORBIDDEN);
-      this.checkWindow(s.begins, s.ends);
+      // The owner's own customer accounts (testing as a client) may enter at any time
+      if (!anytimeEmails().has(String(s.email || '').trim().toLowerCase())) this.checkWindow(s.begins, s.ends);
       identity = `customer-${caller.id}`;
       name = s.callName || s.firstName || 'Cliente';
     } else {
