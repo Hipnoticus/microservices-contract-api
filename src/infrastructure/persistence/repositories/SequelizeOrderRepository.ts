@@ -56,10 +56,10 @@ export class SequelizeOrderRepository implements IOrderRepository {
       { replacements: { statusId, id } },
     );
     // Paid (2 Em Analise) or confirmed (3): a customer with no access group yet (e.g. a Google signup) becomes a
-    // Common customer (group 2), which is what unlocks Moses for them. Existing groups (VIP, ...) are never touched.
+    // VIP customer (group 1), which unlocks Moses and downloads for them. Existing groups are never touched.
     if (statusId === 2 || statusId === 3) {
       await OrderModel.sequelize!.query(
-        `UPDATE tbCustomers SET GroupID = 2, DateModified = GETDATE()
+        `UPDATE tbCustomers SET GroupID = 1, DateModified = GETDATE()
          WHERE ID = (SELECT CustomerID FROM tbOrders WHERE ID = :id) AND ISNULL(GroupID, 0) = 0`,
         { replacements: { id } },
       );
