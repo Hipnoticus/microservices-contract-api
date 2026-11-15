@@ -170,6 +170,11 @@ export class AdminDataService {
     if (!o.length) notFound('Pedido');
     await this.db.query('UPDATE tbOrders SET OrderStatusID = :statusId, DateModified = GETDATE(), ModifiedBy = :staffId WHERE ID = :id',
       { replacements: { id, statusId, staffId } });
+    // Same rule as a paid order: a customer without an access group becomes Common (2), which unlocks Moses.
+    if (statusId === 2 || statusId === 3) {
+      await this.db.query(`UPDATE tbCustomers SET GroupID = 2, DateModified = GETDATE(), ModifiedBy = :staffId
+        WHERE ID = (SELECT CustomerID FROM tbOrders WHERE ID = :id) AND ISNULL(GroupID, 0) = 0`, { replacements: { id, staffId } });
+    }
     return { id, statusId };
   }
 
