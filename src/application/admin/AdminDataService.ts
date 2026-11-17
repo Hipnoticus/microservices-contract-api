@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { QueryTypes, Sequelize } from 'sequelize';
+import { publishCustomerGroupChanged } from '../../infrastructure/events/CustomerGroupEvents';
 
 /**
  * Read models and small writes for the Moses admin area: customers hub, orders, treatments, payment methods,
@@ -106,6 +107,8 @@ export class AdminDataService {
     await this.ensureCustomer(id);
     await this.db.query('UPDATE tbCustomers SET GroupID = :groupId, DateModified = GETDATE(), ModifiedBy = :staffId WHERE ID = :id',
       { replacements: { id, groupId, staffId } });
+    // VIP access in the apps follows the group in real time (CouponAPI)
+    void publishCustomerGroupChanged(id, groupId);
     return { id, groupId };
   }
 
@@ -172,8 +175,12 @@ export class AdminDataService {
       { replacements: { id, statusId, staffId } });
     // Same rule as a paid order: a customer without an access group becomes VIP (1), which unlocks Moses.
     if (statusId === 2 || statusId === 3) {
-      await this.db.query(`UPDATE tbCustomers SET GroupID = 1, DateModified = GETDATE(), ModifiedBy = :staffId
-        WHERE ID = (SELECT CustomerID FROM tbOrders WHERE ID = :id) AND ISNULL(GroupID, 0) = 0`, { replacements: { id, staffId } });
+      const changed = await this.q<{ ID: number }>(`DECLARE @changed TABLE (ID int);
+        UPDATE tbCustomers SET GroupID = 1, DateModified = GETDATE(), ModifiedBy = :staffId
+        OUTPUT INSERTED.ID INTO @changed
+        WHERE ID = (SELECT CustomerID FROM tbOrders WHERE ID = :id) AND ISNULL(GroupID, 0) = 0;
+        SELECT ID FROM @changed`, { id, staffId });
+      for (const c of changed) void publishCustomerGroupChanged(c.ID, 1);
     }
     return { id, statusId };
   }

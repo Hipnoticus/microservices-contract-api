@@ -1,6 +1,8 @@
 import { IOrderRepository } from '../../../domain/repositories/IOrderRepository';
 import { Order } from '../../../domain/entities/Order';
+import { QueryTypes } from 'sequelize';
 import { OrderModel } from '../models/OrderModel';
+import { publishCustomerGroupChanged } from '../../events/CustomerGroupEvents';
 
 export class SequelizeOrderRepository implements IOrderRepository {
   async findAll(): Promise<Order[]> {
@@ -58,11 +60,16 @@ export class SequelizeOrderRepository implements IOrderRepository {
     // Paid (2 Em Analise) or confirmed (3): a customer with no access group yet (e.g. a Google signup) becomes a
     // VIP customer (group 1), which unlocks Moses and downloads for them. Existing groups are never touched.
     if (statusId === 2 || statusId === 3) {
-      await OrderModel.sequelize!.query(
-        `UPDATE tbCustomers SET GroupID = 1, DateModified = GETDATE()
-         WHERE ID = (SELECT CustomerID FROM tbOrders WHERE ID = :id) AND ISNULL(GroupID, 0) = 0`,
-        { replacements: { id } },
+      const changed = await OrderModel.sequelize!.query<{ ID: number }>(
+        `DECLARE @changed TABLE (ID int);
+         UPDATE tbCustomers SET GroupID = 1, DateModified = GETDATE()
+         OUTPUT INSERTED.ID INTO @changed
+         WHERE ID = (SELECT CustomerID FROM tbOrders WHERE ID = :id) AND ISNULL(GroupID, 0) = 0;
+         SELECT ID FROM @changed`,
+        { replacements: { id }, type: QueryTypes.SELECT },
       );
+      // VIP access in the apps follows the group in real time (CouponAPI)
+      for (const c of changed) void publishCustomerGroupChanged(c.ID, 1);
     }
     const model = await OrderModel.findByPk(id);
     return model ? this.toDomain(model) : null;
