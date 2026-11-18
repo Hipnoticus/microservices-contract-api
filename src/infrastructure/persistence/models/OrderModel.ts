@@ -23,6 +23,8 @@ export class OrderModel extends Model {
   declare dateModified: Date | null;
   declare createdBy: number | null;
   declare modifiedBy: number | null;
+  /** Client IP of the request that created the order (CF-Connecting-IP > X-Forwarded-For > socket). */
+  declare ip: string | null;
 }
 
 export function initializeOrderModel(sequelize: Sequelize): void {
@@ -50,6 +52,7 @@ export function initializeOrderModel(sequelize: Sequelize): void {
       dateModified: { type: DataTypes.DATE, field: 'DateModified' },
       createdBy: { type: DataTypes.INTEGER, field: 'CreatedBy' },
       modifiedBy: { type: DataTypes.INTEGER, field: 'ModifiedBy' },
+      ip: { type: DataTypes.STRING(45), field: 'IP' },
     },
     { sequelize, tableName: 'tbOrders', timestamps: false },
   );

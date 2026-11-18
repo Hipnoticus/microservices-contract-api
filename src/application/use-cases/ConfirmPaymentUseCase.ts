@@ -76,7 +76,7 @@ export class ConfirmPaymentUseCase {
     // Load customer data from the order
     const { QueryTypes } = require('sequelize');
     const rows = await this.sequelize.query(
-      `SELECT o.ID, o.CustomerEmail, o.Total, o.MainGoal, o.Identifier, o.Registry,
+      `SELECT o.ID, o.CustomerEmail, o.Total, o.MainGoal, o.Identifier, o.Registry, o.IP,
               c.FirstName, c.LastName, c.CPFCNPJ as CPF, c.PhoneNumber as TelCelular, c.Email,
               CONVERT(varchar(10), c.DateOfBirth, 103) AS BirthDate
        FROM tbOrders o
@@ -118,7 +118,8 @@ export class ConfirmPaymentUseCase {
       pixCopiaECola: '',
       depositValue: '',
       bankData: '',
-      clientIp: orderSubmissions.get(order.id).order?.ip || '',
+      // Stored on the order since 2026-11-18; older orders only have the in-memory copy (48 h).
+      clientIp: data.IP || orderSubmissions.get(order.id).order?.ip || '',
       submitted: orderSubmissions.get(order.id),
     };
 

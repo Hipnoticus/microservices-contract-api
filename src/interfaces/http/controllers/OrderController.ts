@@ -2,8 +2,9 @@ import { Controller, Get, Post, Param, Body, Inject, Req } from '@nestjs/common'
 import { clientIp, userAgent } from '../ClientIp';
 import { orderRateLimiter } from '../RateLimiter';
 import { verifyStaffToken } from '../auth/StaffAuth';
+import { requireTurnstile, TURNSTILE_BODY_FIELD } from '../Turnstile';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
-import { CreateOrderUseCase, CreateOrderDTO } from '../../../application/use-cases/CreateOrderUseCase';
+import { CreateOrderUseCase, type CreateOrderDTO } from '../../../application/use-cases/CreateOrderUseCase';
 import { SequelizeOrderRepository } from '../../../infrastructure/persistence/repositories/SequelizeOrderRepository';
 
 @ApiTags('Orders')
@@ -33,11 +34,17 @@ export class OrderController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create a new order/contract with customer data (public; validated, rate limited per IP)' })
+  @ApiOperation({ summary: 'Create a new order/contract with customer data (public; Turnstile token in body.turnstileToken, validated, rate limited per IP)' })
   async create(@Body() dto: CreateOrderDTO, @Req() req: any) {
     const ip = clientIp(req);
-    // Public sign-up: ORDER_RATE_LIMIT_PER_HOUR per IP (429). A verified staff token is not limited.
-    if (!verifyStaffToken(req?.headers?.authorization)) orderRateLimiter.check(ip, 'cadastro');
-    return this.createOrder.execute(dto, { ip, userAgent: userAgent(req) });
+    // The Turnstile token is not order data: keep it out of the order and the "Dados enviados" e-mail.
+    const { [TURNSTILE_BODY_FIELD]: turnstileToken, ...order } = (dto && typeof dto === 'object' ? dto : {}) as any;
+    // Public sign-up: ORDER_RATE_LIMIT_PER_HOUR per IP (429) and a Cloudflare Turnstile token (403).
+    // A verified staff token skips both; customers and anonymous visitors do not.
+    if (!verifyStaffToken(req?.headers?.authorization)) {
+      orderRateLimiter.check(ip, 'cadastro');
+      await requireTurnstile(turnstileToken, ip, 'POST /orders');
+    }
+    return this.createOrder.execute(order as CreateOrderDTO, { ip, userAgent: userAgent(req) });
   }
 }

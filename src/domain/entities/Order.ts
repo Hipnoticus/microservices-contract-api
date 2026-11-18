@@ -24,5 +24,7 @@ export class Order {
     public readonly dateModified: Date,
     public readonly createdBy: number,
     public readonly modifiedBy: number,
+    /** Client IP that created the order (tbOrders.IP); null for orders from before 2026-11-18. */
+    public readonly ip: string | null = null,
   ) {}
 }

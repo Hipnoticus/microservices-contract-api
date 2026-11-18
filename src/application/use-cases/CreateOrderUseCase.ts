@@ -130,6 +130,7 @@ export class CreateOrderUseCase {
         total: price,
         installments,
         packageSize: Number(dto.packageSize) || 0,
+        ip: meta.ip, // tbOrders.IP (NULL when unknown)
       } as any, t);
 
       // 4. Link order to product

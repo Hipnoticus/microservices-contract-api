@@ -1,8 +1,15 @@
 import { IOrderRepository } from '../../../domain/repositories/IOrderRepository';
 import { Order } from '../../../domain/entities/Order';
 import { QueryTypes, Transaction } from 'sequelize';
+import { isIP } from 'net';
 import { OrderModel } from '../models/OrderModel';
 import { publishCustomerGroupChanged } from '../../events/CustomerGroupEvents';
+
+/** tbOrders.IP is varchar(45): a real address or NULL ('unknown' and anything else is not stored). */
+export function orderIp(v: unknown): string | null {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s && s.length <= 45 && isIP(s) ? s : null;
+}
 
 export class SequelizeOrderRepository implements IOrderRepository {
   async findAll(): Promise<Order[]> {
@@ -26,10 +33,10 @@ export class SequelizeOrderRepository implements IOrderRepository {
     // Include CustomerEmail and CustomerAddressID to match legacy order structure
     const [result] = await OrderModel.sequelize!.query(
       `INSERT INTO tbOrders (CustomerID, CustomerEmail, CustomerAddressID, OrderStatusID, MainGoal, FormaPagamento, SubTotal, Total, ShipValue,
-        FirstAppointmentDay, FirstAppointmentHour, SessionDay, SessionHour, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+        FirstAppointmentDay, FirstAppointmentHour, SessionDay, SessionHour, IP, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
        OUTPUT INSERTED.ID
        VALUES (:customerId, :email, :addressId, :statusId, :mainGoal, :paymentMethodId, :subTotal, :total, 0,
-        :firstAppointmentDay, :firstAppointmentHour, :sessionDay, :sessionHour, 0, GETDATE(), GETDATE(), 1, 1)`,
+        :firstAppointmentDay, :firstAppointmentHour, :sessionDay, :sessionHour, :ip, 0, GETDATE(), GETDATE(), 1, 1)`,
       {
         replacements: {
           customerId: data.customerId,
@@ -44,6 +51,7 @@ export class SequelizeOrderRepository implements IOrderRepository {
           firstAppointmentHour: (data.firstAppointmentHour && data.firstAppointmentHour !== 'null') ? data.firstAppointmentHour : null,
           sessionDay: (data.sessionDay && data.sessionDay !== 'null') ? data.sessionDay : null,
           sessionHour: (data.sessionHour && data.sessionHour !== 'null') ? data.sessionHour : null,
+          ip: orderIp((data as any).ip),
         },
         transaction: tx,
       },
@@ -98,6 +106,7 @@ export class SequelizeOrderRepository implements IOrderRepository {
       1, 0, model.blocked || false,
       model.dateCreated || new Date(), model.dateModified || new Date(),
       model.createdBy || 1, model.modifiedBy || 1,
+      model.ip || null,
     );
   }
 }

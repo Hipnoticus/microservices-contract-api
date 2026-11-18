@@ -1,8 +1,9 @@
 /**
  * What the visitor actually sent, kept per order so the internal "Nova contratação" e-mail can list it
  * ("Dados enviados") with the client IP. The order is created by POST /orders and the e-mail goes out from
- * POST /payments/process, a second request, so the first one is remembered here. tbOrders has no IP column;
- * this lives in memory for SUBMISSION_TTL_MS (a restart in between loses only the order part of the list).
+ * POST /payments/process, a second request, so the first one is remembered here. The client IP is also stored in
+ * tbOrders.IP (since 2026-11-18), which the e-mails prefer; the full body lives only in memory for
+ * SUBMISSION_TTL_MS (a restart in between loses only the order part of the list).
  */
 export interface Submission {
   ip: string;

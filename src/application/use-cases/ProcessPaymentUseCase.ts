@@ -605,7 +605,8 @@ export class ProcessPaymentUseCase {
       firstAppointmentHour: db?.firstAppointmentHour || req.firstAppointmentHour || '',
       sessionDay: scheduleDay(req.sessionDay, db?.sessionDay ?? ''),
       sessionHour: db?.sessionHour || req.sessionHour || '',
-      clientIp: submitted.order?.ip || req.clientIp || '',
+      // tbOrders.IP first (stored since 2026-11-18), then the in-memory copy, then this request's IP.
+      clientIp: db?.ip || submitted.order?.ip || req.clientIp || '',
       submitted,
       paymentMethod: req.paymentMethodIdExt,
       amount: req.amount,
@@ -631,13 +632,13 @@ export class ProcessPaymentUseCase {
   private async loadOrderForEmail(orderId: number): Promise<{
     customerName: string; email: string; cpf: string; phone: string; birthDate: string; mainGoal: string;
     cep: string; street: string; number: string; complement: string; neighborhood: string; city: string; state: string; country: string;
-    firstAppointmentDay: string; firstAppointmentHour: string; sessionDay: string; sessionHour: string;
+    firstAppointmentDay: string; firstAppointmentHour: string; sessionDay: string; sessionHour: string; ip: string;
   } | null> {
     if (!this.sequelize) return null;
     try {
       const { QueryTypes } = require('sequelize');
       const rows = await this.sequelize.query(
-        `SELECT o.MainGoal, o.FirstAppointmentDay, o.FirstAppointmentHour, o.SessionDay, o.SessionHour, o.CustomerEmail,
+        `SELECT o.MainGoal, o.FirstAppointmentDay, o.FirstAppointmentHour, o.SessionDay, o.SessionHour, o.CustomerEmail, o.IP,
                 c.FirstName, c.LastName, c.Email, c.CPFCNPJ, c.PhoneNumber, CONVERT(varchar(10), c.DateOfBirth, 23) AS BirthDate,
                 a.Zip, a.Address, a.Number, a.Address2, a.Town, a.City, a.State, a.Country
          FROM tbOrders o
@@ -656,7 +657,7 @@ export class ProcessPaymentUseCase {
         cep: s(r.Zip), street: s(r.Address), number: s(r.Number), complement: s(r.Address2),
         neighborhood: s(r.Town), city: s(r.City), state: s(r.State), country: s(r.Country) || 'Brasil',
         firstAppointmentDay: s(r.FirstAppointmentDay), firstAppointmentHour: s(r.FirstAppointmentHour),
-        sessionDay: s(r.SessionDay), sessionHour: s(r.SessionHour),
+        sessionDay: s(r.SessionDay), sessionHour: s(r.SessionHour), ip: s(r.IP),
       };
     } catch (e) {
       logger.warn(`Could not load order ${orderId} for the e-mail: ${(e as Error).message}`);
