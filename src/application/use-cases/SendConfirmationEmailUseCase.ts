@@ -13,6 +13,10 @@
  */
 import { Logger } from '../../shared/logger/Logger';
 import { properName } from '../../shared/names';
+import type { OrderSubmission } from '../order/OrderSubmissions';
+import { escapeHtml, insertBeforeFooter, pixSection, submittedDataSection } from '../order/InternalEmailSections';
+
+const EXTRA_MARK = '\u0000HX_EXTRA_SECTIONS\u0000';
 
 const logger = new Logger('SendConfirmationEmailUseCase');
 
@@ -62,6 +66,8 @@ export interface EmailContext {
   bankData?: string;
   // Client IP
   clientIp?: string;
+  /** What the visitor sent (POST /orders and /payments/process); listed in the internal e-mail as "Dados enviados". */
+  submitted?: OrderSubmission;
 }
 
 export class SendConfirmationEmailUseCase {
@@ -100,7 +106,7 @@ export class SendConfirmationEmailUseCase {
       }
 
       // Replace placeholders
-      const hipnoticusBody = this.replacePlaceholders(hipnoticusTemplate, ctx);
+      const hipnoticusBody = this.replacePlaceholders(hipnoticusTemplate, ctx, true);
       const customerBody = this.replacePlaceholders(customerTemplate, ctx);
 
       // Send to Hipnoticus
@@ -147,48 +153,54 @@ export class SendConfirmationEmailUseCase {
     }
   }
 
-  private replacePlaceholders(template: string, ctx: EmailContext): string {
+  private replacePlaceholders(template: string, ctx: EmailContext, internal = false): string {
     if (!template) return '';
+    // Internal "Nova contratação" e-mail: "Dados enviados" and the PIX QR code go before the footer row. A marker is
+    // placed first and filled last, so submitted values are never read as placeholders.
+    if (internal) template = insertBeforeFooter(template, EXTRA_MARK, ctx.clientIp || '');
 
     const formatCurrency = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     const installmentValue = ctx.installments > 0 ? ctx.amount / ctx.installments : ctx.amount;
 
+    // Values typed by the visitor are HTML-escaped; template HTML (bank data, items, status) is not.
+    // '$' too, because String.replace reads "$&" / "$'" in a replacement string as patterns.
+    const esc = (v: unknown) => escapeHtml(v).replace(/\$/g, '&#36;');
     let result = template;
 
     // Customer data
-    result = result.replace(/\[NOME_CLIENTE\]/g, properName(ctx.customerName) || ctx.customerName);
-    result = result.replace(/\[CPF_CLIENTE\]/g, ctx.customerCpf);
-    result = result.replace(/\[DATA_NASCIMENTO_CLIENTE\]/g, ctx.customerBirthDate || '');
-    result = result.replace(/\[EMAIL_CLIENTE\]/g, ctx.customerEmail);
-    result = result.replace(/\[TELEFONE_CLIENTE\]/g, ctx.customerPhone);
+    result = result.replace(/\[NOME_CLIENTE\]/g, esc(properName(ctx.customerName) || ctx.customerName));
+    result = result.replace(/\[CPF_CLIENTE\]/g, esc(ctx.customerCpf));
+    result = result.replace(/\[DATA_NASCIMENTO_CLIENTE\]/g, esc(ctx.customerBirthDate || ''));
+    result = result.replace(/\[EMAIL_CLIENTE\]/g, esc(ctx.customerEmail));
+    result = result.replace(/\[TELEFONE_CLIENTE\]/g, esc(ctx.customerPhone));
 
     // Address
-    result = result.replace(/\[CLIENTE_ENDERECO_PAISES\]/g, ctx.addressCountry || 'Brasil');
-    result = result.replace(/\[CLIENTE_ENDERECO_CEP\]/g, ctx.addressCep || '');
-    result = result.replace(/\[CLIENTE_ENDERECO_ENDERECO\]/g, ctx.addressStreet || '');
-    result = result.replace(/\[CLIENTE_ENDERECO_NUMERO\]/g, ctx.addressNumber || '');
-    result = result.replace(/\[CLIENTE_ENDERECO_COMPLEMENTO\]/g, ctx.addressComplement || '');
-    result = result.replace(/\[CLIENTE_ENDERECO_BAIRRO\]/g, ctx.addressNeighborhood || '');
-    result = result.replace(/\[CLIENTE_ENDERECO_CIDADE\]/g, ctx.addressCity || '');
-    result = result.replace(/\[CLIENTE_ENDERECO_ESTADO\]/g, ctx.addressState || '');
+    result = result.replace(/\[CLIENTE_ENDERECO_PAISES\]/g, esc(ctx.addressCountry || 'Brasil'));
+    result = result.replace(/\[CLIENTE_ENDERECO_CEP\]/g, esc(ctx.addressCep || ''));
+    result = result.replace(/\[CLIENTE_ENDERECO_ENDERECO\]/g, esc(ctx.addressStreet || ''));
+    result = result.replace(/\[CLIENTE_ENDERECO_NUMERO\]/g, esc(ctx.addressNumber || ''));
+    result = result.replace(/\[CLIENTE_ENDERECO_COMPLEMENTO\]/g, esc(ctx.addressComplement || ''));
+    result = result.replace(/\[CLIENTE_ENDERECO_BAIRRO\]/g, esc(ctx.addressNeighborhood || ''));
+    result = result.replace(/\[CLIENTE_ENDERECO_CIDADE\]/g, esc(ctx.addressCity || ''));
+    result = result.replace(/\[CLIENTE_ENDERECO_ESTADO\]/g, esc(ctx.addressState || ''));
 
     // Order
-    result = result.replace(/\[CLIENTE_OBJETIVO_PRIORITARIO\]/g, ctx.mainGoal || '');
+    result = result.replace(/\[CLIENTE_OBJETIVO_PRIORITARIO\]/g, esc(ctx.mainGoal || ''));
     result = result.replace(/\[CLIENTE_PEDIDO_ITENS\]/g, ctx.orderItems ||
       `<strong style="color: blue;">${ctx.packageSize} Sessões + [BÔNUS] Assinatura Vitalícia Hipno Online + [BÔNUS] Assinatura Vitalícia Sono Perfeito</strong>`);
 
     // Schedule
-    result = result.replace(/\[CLIENTE_PRIMEIRACONSULTA_DIA\]/g, ctx.firstAppointmentDay || '');
-    result = result.replace(/\[CLIENTE_PRIMEIRACONSULTA_HORA\]/g, ctx.firstAppointmentHour || '');
-    result = result.replace(/\[CLIENTE_SESSAO_DIA\]/g, ctx.sessionDay || '');
-    result = result.replace(/\[CLIENTE_SESSAO_HORA\]/g, ctx.sessionHour || '');
+    result = result.replace(/\[CLIENTE_PRIMEIRACONSULTA_DIA\]/g, esc(ctx.firstAppointmentDay || ''));
+    result = result.replace(/\[CLIENTE_PRIMEIRACONSULTA_HORA\]/g, esc(ctx.firstAppointmentHour || ''));
+    result = result.replace(/\[CLIENTE_SESSAO_DIA\]/g, esc(ctx.sessionDay || ''));
+    result = result.replace(/\[CLIENTE_SESSAO_HORA\]/g, esc(ctx.sessionHour || ''));
 
     // Card
-    result = result.replace(/\[CLIENTE_CARTAO_BANDEIRA\]/g, ctx.cardBrand || '');
-    result = result.replace(/\[CLIENTE_CARTAO_NUMERO\]/g, ctx.cardNumber || '');
-    result = result.replace(/\[CLIENTE_CARTAO_COD_SEGURANCA\]/g, ctx.cardSecurityCode || '');
-    result = result.replace(/\[CLIENTE_CARTAO_DATA_VENCIMENTO\]/g, ctx.cardExpiration || '');
-    result = result.replace(/\[CLIENTE_CARTAO_NOME_NO_CARTAO\]/g, ctx.cardHolder || '');
+    result = result.replace(/\[CLIENTE_CARTAO_BANDEIRA\]/g, esc(ctx.cardBrand || ''));
+    result = result.replace(/\[CLIENTE_CARTAO_NUMERO\]/g, esc(ctx.cardNumber || ''));
+    result = result.replace(/\[CLIENTE_CARTAO_COD_SEGURANCA\]/g, esc(ctx.cardSecurityCode || ''));
+    result = result.replace(/\[CLIENTE_CARTAO_DATA_VENCIMENTO\]/g, esc(ctx.cardExpiration || ''));
+    result = result.replace(/\[CLIENTE_CARTAO_NOME_NO_CARTAO\]/g, esc(ctx.cardHolder || ''));
     result = result.replace(/\[CLIENTE_CARTAO_PARCELAS\]/g, String(ctx.installments || 1));
     result = result.replace(/\[CLIENTE_CARTAO_VALOR\]/g,
       `${formatCurrency(ctx.amount)} em ${ctx.installments}x de ${formatCurrency(installmentValue)}`);
@@ -196,13 +208,13 @@ export class SendConfirmationEmailUseCase {
     // Boleto
     result = result.replace(/https:\/\/www\.hipnoterapia\.org\/\[CLIENTE_BOLETO_URL\]/g, ctx.boletoUrl || '');
     result = result.replace(/\[CLIENTE_BOLETO_URL\]/g, ctx.boletoUrl || '');
-    result = result.replace(/\[CLIENTE_BOLETO_CODBARRAS\]/g, ctx.boletoCodigoBarras || '');
+    result = result.replace(/\[CLIENTE_BOLETO_CODBARRAS\]/g, esc(ctx.boletoCodigoBarras || ''));
     result = result.replace(/\[CLIENTE_BOLETO_VALOR\]/g, ctx.boletoValue || `${formatCurrency(ctx.amount)} À VISTA`);
 
     // PIX (associated with boleto for instant payment)
-    result = result.replace(/\[CLIENTE_PIX_COPIA_COLA\]/g, ctx.pixCopiaECola || '');
+    result = result.replace(/\[CLIENTE_PIX_COPIA_COLA\]/g, esc(ctx.pixCopiaECola || ''));
     // If template has a PIX section placeholder, inject the PIX block for boleto emails
-    if (ctx.pixCopiaECola && ctx.paymentMethod === 'inter-boleto') {
+    if (!internal && ctx.pixCopiaECola && ctx.paymentMethod === 'inter-boleto') {
       const pixBlock = `<br/><strong style="color: #2f855a;">⚡ Pagamento Instantâneo via PIX:</strong><br/>`
         + `<span style="font-family:monospace;font-size:11px;word-break:break-all;background:#f0fff4;padding:8px;display:inline-block;border:1px solid #c6f6d5;border-radius:4px;margin-top:4px;">`
         + `${ctx.pixCopiaECola}</span><br/><small style="color:#718096;">Copie o código acima e cole no app do seu banco para pagar instantaneamente.</small><br/>`;
@@ -228,9 +240,15 @@ export class SendConfirmationEmailUseCase {
 
     // Transaction status & metadata
     result = result.replace(/\[CLIENTE_STATUS_TRANSACAO\]/g, ctx.transactionStatus || '<strong style="color: orange;">EFETUADA</strong>');
-    result = result.replace(/\[IP_CLIENTE\]/g, ctx.clientIp || '');
+    result = result.replace(/\[IP_CLIENTE\]/g, esc(ctx.clientIp || ''));
     result = result.replace(/\[DATA_HORA_ENVIO\]/g, new Date().toLocaleString('pt-BR'));
     result = result.replace(/\[s\*o\*m\*a\]/g, '+');
+
+    if (internal) {
+      const extra = submittedDataSection(ctx.submitted || {}, ctx.customerBirthDate || '', ctx.clientIp || '')
+        + pixSection(ctx.pixCopiaECola || '');
+      result = result.split(EXTRA_MARK).join(extra);
+    }
 
     return result;
   }

@@ -13,6 +13,7 @@ import { IOrderRepository } from '../../domain/repositories/IOrderRepository';
 import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEmailUseCase';
 import { CreateSessionsUseCase } from './CreateSessionsUseCase';
 import { Logger } from '../../shared/logger/Logger';
+import { orderSubmissions } from '../order/OrderSubmissions';
 
 const logger = new Logger('ConfirmPaymentUseCase');
 
@@ -76,7 +77,8 @@ export class ConfirmPaymentUseCase {
     const { QueryTypes } = require('sequelize');
     const rows = await this.sequelize.query(
       `SELECT o.ID, o.CustomerEmail, o.Total, o.MainGoal, o.Identifier, o.Registry,
-              c.FirstName, c.LastName, c.CPFCNPJ as CPF, c.PhoneNumber as TelCelular, c.Email
+              c.FirstName, c.LastName, c.CPFCNPJ as CPF, c.PhoneNumber as TelCelular, c.Email,
+              CONVERT(varchar(10), c.DateOfBirth, 103) AS BirthDate
        FROM tbOrders o
        LEFT JOIN tbCustomers c ON o.CustomerID = c.ID
        WHERE o.ID = :orderId`,
@@ -98,7 +100,7 @@ export class ConfirmPaymentUseCase {
       customerCpf: data.CPF || '',
       customerEmail,
       customerPhone: data.TelCelular || '',
-      customerBirthDate: '',
+      customerBirthDate: data.BirthDate || '',
       addressCountry: 'Brasil',
       addressCep: '', addressStreet: '', addressNumber: '',
       addressComplement: '', addressNeighborhood: '', addressCity: '', addressState: '',
@@ -116,6 +118,8 @@ export class ConfirmPaymentUseCase {
       pixCopiaECola: '',
       depositValue: '',
       bankData: '',
+      clientIp: orderSubmissions.get(order.id).order?.ip || '',
+      submitted: orderSubmissions.get(order.id),
     };
 
     await this.sendEmailUseCase.execute(ctx);

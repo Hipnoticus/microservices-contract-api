@@ -1,4 +1,7 @@
-import { Controller, Get, Post, Param, Body, Inject } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Inject, Req } from '@nestjs/common';
+import { clientIp, userAgent } from '../ClientIp';
+import { orderRateLimiter } from '../RateLimiter';
+import { verifyStaffToken } from '../auth/StaffAuth';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { CreateOrderUseCase, CreateOrderDTO } from '../../../application/use-cases/CreateOrderUseCase';
 import { SequelizeOrderRepository } from '../../../infrastructure/persistence/repositories/SequelizeOrderRepository';
@@ -30,8 +33,11 @@ export class OrderController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create a new order/contract with customer data' })
-  async create(@Body() dto: CreateOrderDTO) {
-    return this.createOrder.execute(dto);
+  @ApiOperation({ summary: 'Create a new order/contract with customer data (public; validated, rate limited per IP)' })
+  async create(@Body() dto: CreateOrderDTO, @Req() req: any) {
+    const ip = clientIp(req);
+    // Public sign-up: ORDER_RATE_LIMIT_PER_HOUR per IP (429). A verified staff token is not limited.
+    if (!verifyStaffToken(req?.headers?.authorization)) orderRateLimiter.check(ip, 'cadastro');
+    return this.createOrder.execute(dto, { ip, userAgent: userAgent(req) });
   }
 }

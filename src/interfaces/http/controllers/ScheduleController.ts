@@ -1,6 +1,7 @@
 import { Controller, Get, Query, Inject } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { Sequelize, QueryTypes } from 'sequelize';
+import { loadConfig, parseTimeSlots, parseWeekdays } from '../../../application/order/ScheduleRules';
 
 /*
  * ══════════════════════════════════════════════════════════════════
@@ -317,54 +318,17 @@ export class ScheduleController {
     return set;
   }
 
-  // ── PRIVATE: tbConfig PARSING ────────────────────────────────────
+  // ── PRIVATE: tbConfig PARSING (shared with the order checks, application/order/ScheduleRules.ts) ──
 
-  private async loadConfig(prefix: string): Promise<Record<string, string>> {
-    const rows = await this.sequelize.query(
-      `SELECT Name, Value FROM tbConfig WHERE Name LIKE :prefix ORDER BY Name`,
-      { replacements: { prefix: `${prefix}%` }, type: QueryTypes.SELECT },
-    ) as any[];
-    const cfg: Record<string, string> = {};
-    for (const r of rows) {
-      if (r?.Name) cfg[r.Name] = (r.Value || '').replace(/<\/?p>/g, '').trim();
-    }
-    return cfg;
+  private loadConfig(prefix: string): Promise<Record<string, string>> {
+    return loadConfig(this.sequelize, prefix);
   }
 
   private parseWeekdays(cfg: Record<string, string>): any[] {
-    const result: any[] = [];
-    for (let i = 1; i <= 7; i++) {
-      const suffix = 'weekdays.slot' + i;
-      const key = Object.keys(cfg).find(k => k.endsWith(suffix));
-      if (key) {
-        const day = parseInt(cfg[key], 10);
-        const blocked = cfg[key + '.blocked'] === '1';
-        result.push({ dayOfWeek: day, dayName: DAY_NAMES[day] || '', blocked });
-      }
-    }
-    return result;
+    return parseWeekdays(cfg);
   }
 
   private parseTimeSlots(cfg: Record<string, string>): any[] {
-    const result: any[] = [];
-    for (let i = 1; i <= 10; i++) {
-      const bSuffix = 'times.slot' + i + '.begin';
-      const eSuffix = 'times.slot' + i + '.end';
-      const blSuffix = 'times.slot' + i + '.blocked';
-      const bk = Object.keys(cfg).find(k => k.endsWith(bSuffix));
-      const ek = Object.keys(cfg).find(k => k.endsWith(eSuffix));
-      const blk = Object.keys(cfg).find(k => k.endsWith(blSuffix));
-      if (bk && ek) {
-        const blocked = blk ? cfg[blk] === '1' : false;
-        result.push({
-          begin: cfg[bk],
-          end: cfg[ek],
-          time: `das ${cfg[bk]} às ${cfg[ek]}`,
-          blocked,
-          order: i,
-        });
-      }
-    }
-    return result;
+    return parseTimeSlots(cfg);
   }
 }

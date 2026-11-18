@@ -7,6 +7,8 @@ import type { ConfirmPaymentUseCase } from '../../../application/use-cases/Confi
 import type { BancoInterGateway } from '../../../infrastructure/payment/BancoInterGateway';
 import type { IOrderRepository } from '../../../domain/repositories/IOrderRepository';
 import { Logger } from '../../../shared/logger/Logger';
+import { clientIp, userAgent } from '../ClientIp';
+import { paymentRateLimiter } from '../RateLimiter';
 
 const logger = new Logger('PaymentController');
 
@@ -25,7 +27,14 @@ export class PaymentController {
   async process(@Body() body: PaymentRequest, @Req() req: any): Promise<PaymentResponse> {
     // Public (visitor checkout). Only a verified staff token may unlock the legacy test price.
     const staffCaller = !!verifyStaffToken(req?.headers?.authorization);
-    return this.processPayment.execute({ ...(body || ({} as PaymentRequest)), staffCaller });
+    const ip = clientIp(req);
+    if (!staffCaller) paymentRateLimiter.check(ip, 'pagamento');
+    return this.processPayment.execute({
+      ...(body || ({} as PaymentRequest)),
+      staffCaller,
+      clientIp: ip,
+      clientUserAgent: userAgent(req),
+    });
   }
 
   @Get('status/:orderId')

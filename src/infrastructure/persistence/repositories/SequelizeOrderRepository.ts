@@ -1,6 +1,6 @@
 import { IOrderRepository } from '../../../domain/repositories/IOrderRepository';
 import { Order } from '../../../domain/entities/Order';
-import { QueryTypes } from 'sequelize';
+import { QueryTypes, Transaction } from 'sequelize';
 import { OrderModel } from '../models/OrderModel';
 import { publishCustomerGroupChanged } from '../../events/CustomerGroupEvents';
 
@@ -20,7 +20,8 @@ export class SequelizeOrderRepository implements IOrderRepository {
     return models.map((m) => this.toDomain(m));
   }
 
-  async create(data: Partial<Order>): Promise<Order> {
+  async create(data: Partial<Order>, transaction?: unknown): Promise<Order> {
+    const tx = (transaction as Transaction | undefined) || undefined;
     // Use raw INSERT with GETDATE() to avoid Sequelize timezone offset issues with SQL Server datetime
     // Include CustomerEmail and CustomerAddressID to match legacy order structure
     const [result] = await OrderModel.sequelize!.query(
@@ -44,11 +45,13 @@ export class SequelizeOrderRepository implements IOrderRepository {
           sessionDay: (data.sessionDay && data.sessionDay !== 'null') ? data.sessionDay : null,
           sessionHour: (data.sessionHour && data.sessionHour !== 'null') ? data.sessionHour : null,
         },
+        transaction: tx,
       },
     );
     const insertedId = (result as any)[0]?.ID;
     if (!insertedId) throw new Error('Failed to create order — no ID returned');
-    const model = await OrderModel.findByPk(insertedId);
+    // Same transaction: a read on another connection would wait on the uncommitted insert.
+    const model = await OrderModel.findByPk(insertedId, { transaction: tx });
     return this.toDomain(model!);
   }
 

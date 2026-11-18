@@ -16,6 +16,26 @@ import { CreateSessionsUseCase } from './CreateSessionsUseCase';
 import { CustomerCard } from '../../infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from '../../shared/logger/Logger';
 import { chargeAmount } from '../payment/PaymentPolicy';
+import { HttpException, HttpStatus } from '@nestjs/common';
+import { DAY_NAMES, loadAgenda, slotTaken, validateOrderSchedule, validatePaymentDates } from '../order/ScheduleRules';
+import { orderSubmissions } from '../order/OrderSubmissions';
+import { parseIsoDate } from '../order/SignupValidation';
+
+/** yyyy-mm-dd (or a Date) to "dd/mm/aaaa"; anything else as is. */
+function brDate(v: unknown): string {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    // tedious reads a datetime as UTC wall clock
+    return `${String(v.getUTCDate()).padStart(2, '0')}/${String(v.getUTCMonth() + 1).padStart(2, '0')}/${v.getUTCFullYear()}`;
+  }
+  const p = parseIsoDate(v);
+  return p ? `${String(p.d).padStart(2, '0')}/${String(p.m).padStart(2, '0')}/${p.y}` : String(v ?? '');
+}
+/** "dd/mm/aaaa (terça-feira)" for a yyyy-mm-dd date, else the weekday name of the order's day number. */
+function scheduleDay(date: unknown, orderDay: string): string {
+  const p = parseIsoDate(date);
+  if (p) return `${brDate(date)} (${DAY_NAMES[new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay()]})`;
+  return DAY_NAMES[Number(orderDay)] ?? orderDay ?? '';
+}
 
 const logger = new Logger('ProcessPaymentUseCase');
 
@@ -59,6 +79,9 @@ export interface PaymentRequest {
   customerId?: number;
   /** Set by PaymentController from a verified staff token; any value in the request body is overwritten. */
   staffCaller?: boolean;
+  /** Set by PaymentController (CF-Connecting-IP, X-Forwarded-For, socket); body values are overwritten. */
+  clientIp?: string;
+  clientUserAgent?: string;
 }
 
 export interface PaymentResponse {
@@ -112,6 +135,14 @@ export class ProcessPaymentUseCase {
       logger.warn(`Payment amount from the client (${req.amount}) differs from order ${orderId} total (${orderTotal}); charging the order total`);
     }
 
+    // Kept for the internal e-mail ("Dados enviados"), without the fields the controller sets.
+    const { staffCaller: _s, clientIp: _ip, clientUserAgent: _ua, ...submitted } = req;
+    orderSubmissions.recordPayment(orderId, { ip: req.clientIp || 'unknown', userAgent: req.clientUserAgent || '', at: new Date(), body: submitted });
+
+    // The agenda is checked again here: the dates come from this (public) request, and an order created before the
+    // checks existed (e.g. order 5009, "14:00") must not reserve slots that are not offered.
+    await this.assertScheduleAvailable(order, req);
+
     let effectiveAmount = orderTotal;
     const testAllowed = req.staffCaller === true || await this.isTestCustomer(order.customerId);
     if (testAllowed) {
@@ -150,6 +181,28 @@ export class ProcessPaymentUseCase {
         return this.processManual(effectiveReq);
       default:
         return this.processManual(effectiveReq);
+    }
+  }
+
+  /** 400 (pt-BR) unless the order's weekday/time are offered slots and the request's dates follow the agenda rules. */
+  private async assertScheduleAvailable(order: { id: number; firstAppointmentDay: string; firstAppointmentHour: string; sessionDay: string; sessionHour: string }, req: PaymentRequest): Promise<void> {
+    if (!this.sequelize) return;
+    const refuse = (error: string) => {
+      logger.warn(`Payment refused for order ${order.id} (ip ${req.clientIp}): ${error}`);
+      throw new HttpException({ error }, HttpStatus.BAD_REQUEST);
+    };
+    const [appointments, sessions] = await Promise.all([
+      loadAgenda(this.sequelize, 'schedule.appointments'),
+      loadAgenda(this.sequelize, 'schedule.sessions'),
+    ]);
+    const slots = validateOrderSchedule(appointments, sessions, order);
+    if (!slots.ok) return refuse(`${slots.error} Faça um novo pedido.`);
+    const dates = validatePaymentDates(order, req.firstAppointmentDay, req.sessionDay);
+    if (!dates.ok) return refuse(dates.error);
+    for (const begins of dates.checks) {
+      if (await slotTaken(this.sequelize, begins, order.id)) {
+        return refuse(`O horário de ${brDate(begins.slice(0, 10))} às ${begins.slice(11, 16)} acabou de ser reservado por outro cliente. Escolha outro horário.`);
+      }
     }
   }
 
@@ -527,27 +580,33 @@ export class ProcessPaymentUseCase {
       } catch { /* ignore */ }
     }
 
+    // Customer, address and schedule come from the stored (validated) order, not from this public request body, so
+    // the e-mails cannot be sent to an address the order does not belong to. What was sent is listed separately.
+    const db = await this.loadOrderForEmail(req.orderId);
+    const submitted = orderSubmissions.get(req.orderId);
     const ctx: EmailContext = {
-      customerName: req.customerName,
-      customerCpf: req.customerCpf,
-      customerEmail: req.customerEmail,
-      customerPhone: req.customerPhone || '',
-      customerBirthDate: req.customerBirthDate || '',
-      addressCountry: 'Brasil',
-      addressCep: req.address?.cep || '',
-      addressStreet: req.address?.street || '',
-      addressNumber: req.address?.number || '',
-      addressComplement: req.address?.complement || '',
-      addressNeighborhood: req.address?.neighborhood || '',
-      addressCity: req.address?.city || '',
-      addressState: req.address?.state || '',
-      mainGoal: req.mainGoal || '',
+      customerName: db?.customerName || req.customerName,
+      customerCpf: db ? db.cpf : req.customerCpf,
+      customerEmail: db?.email || req.customerEmail,
+      customerPhone: db ? db.phone : (req.customerPhone || ''),
+      customerBirthDate: brDate(db?.birthDate || req.customerBirthDate || ''),
+      addressCountry: db?.country || 'Brasil',
+      addressCep: db ? db.cep : (req.address?.cep || ''),
+      addressStreet: db ? db.street : (req.address?.street || ''),
+      addressNumber: db ? db.number : (req.address?.number || ''),
+      addressComplement: db ? db.complement : (req.address?.complement || ''),
+      addressNeighborhood: db ? db.neighborhood : (req.address?.neighborhood || ''),
+      addressCity: db ? db.city : (req.address?.city || ''),
+      addressState: db ? db.state : (req.address?.state || ''),
+      mainGoal: db?.mainGoal || req.mainGoal || '',
       packageSize: req.packageSize || 0,
       orderItems: '',
-      firstAppointmentDay: req.firstAppointmentDay || '',
-      firstAppointmentHour: req.firstAppointmentHour || '',
-      sessionDay: req.sessionDay || '',
-      sessionHour: req.sessionHour || '',
+      firstAppointmentDay: scheduleDay(req.firstAppointmentDay, db?.firstAppointmentDay ?? ''),
+      firstAppointmentHour: db?.firstAppointmentHour || req.firstAppointmentHour || '',
+      sessionDay: scheduleDay(req.sessionDay, db?.sessionDay ?? ''),
+      sessionHour: db?.sessionHour || req.sessionHour || '',
+      clientIp: submitted.order?.ip || req.clientIp || '',
+      submitted,
       paymentMethod: req.paymentMethodIdExt,
       amount: req.amount,
       installments: req.installments,
@@ -567,6 +626,42 @@ export class ProcessPaymentUseCase {
     };
 
     await this.sendEmailUseCase.execute(ctx);
+  }
+
+  private async loadOrderForEmail(orderId: number): Promise<{
+    customerName: string; email: string; cpf: string; phone: string; birthDate: string; mainGoal: string;
+    cep: string; street: string; number: string; complement: string; neighborhood: string; city: string; state: string; country: string;
+    firstAppointmentDay: string; firstAppointmentHour: string; sessionDay: string; sessionHour: string;
+  } | null> {
+    if (!this.sequelize) return null;
+    try {
+      const { QueryTypes } = require('sequelize');
+      const rows = await this.sequelize.query(
+        `SELECT o.MainGoal, o.FirstAppointmentDay, o.FirstAppointmentHour, o.SessionDay, o.SessionHour, o.CustomerEmail,
+                c.FirstName, c.LastName, c.Email, c.CPFCNPJ, c.PhoneNumber, CONVERT(varchar(10), c.DateOfBirth, 23) AS BirthDate,
+                a.Zip, a.Address, a.Number, a.Address2, a.Town, a.City, a.State, a.Country
+         FROM tbOrders o
+         LEFT JOIN tbCustomers c ON c.ID = o.CustomerID
+         LEFT JOIN tbCustomersAddresses a ON a.ID = o.CustomerAddressID
+         WHERE o.ID = :orderId`,
+        { replacements: { orderId }, type: QueryTypes.SELECT },
+      ) as any[];
+      const r = rows?.[0];
+      if (!r) return null;
+      const s = (v: unknown) => (v === null || v === undefined ? '' : String(v).trim());
+      return {
+        customerName: `${s(r.FirstName)} ${s(r.LastName)}`.trim(),
+        email: s(r.Email) || s(r.CustomerEmail),
+        cpf: s(r.CPFCNPJ), phone: s(r.PhoneNumber), birthDate: s(r.BirthDate), mainGoal: s(r.MainGoal),
+        cep: s(r.Zip), street: s(r.Address), number: s(r.Number), complement: s(r.Address2),
+        neighborhood: s(r.Town), city: s(r.City), state: s(r.State), country: s(r.Country) || 'Brasil',
+        firstAppointmentDay: s(r.FirstAppointmentDay), firstAppointmentHour: s(r.FirstAppointmentHour),
+        sessionDay: s(r.SessionDay), sessionHour: s(r.SessionHour),
+      };
+    } catch (e) {
+      logger.warn(`Could not load order ${orderId} for the e-mail: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   /**
