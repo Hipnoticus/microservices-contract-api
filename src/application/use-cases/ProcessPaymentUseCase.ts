@@ -15,6 +15,7 @@ import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEm
 import { CreateSessionsUseCase } from './CreateSessionsUseCase';
 import { CustomerCard } from '../../infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from '../../shared/logger/Logger';
+import { chargeAmount } from '../payment/PaymentPolicy';
 
 const logger = new Logger('ProcessPaymentUseCase');
 
@@ -56,6 +57,8 @@ export interface PaymentRequest {
   // Save card for future use (tokenize with Cielo)
   saveCard?: boolean;
   customerId?: number;
+  /** Set by PaymentController from a verified staff token; any value in the request body is overwritten. */
+  staffCaller?: boolean;
 }
 
 export interface PaymentResponse {
@@ -91,23 +94,48 @@ export class ProcessPaymentUseCase {
   ) {}
 
   async execute(req: PaymentRequest): Promise<PaymentResponse> {
-    // Test mode: if customer email matches test email in tbConfig,
-    // override amount to test value (legacy: orders.transaction.test.email / orders.transaction.test.value)
-    let effectiveAmount = req.amount;
-    if (req.testMode || req.customerEmail) {
+    // Public endpoint: the order must exist and the amount is the stored order total, never req.amount
+    // (incident 20261118). The legacy test price applies only to a staff caller or a TestUser customer.
+    const orderId = Number(req?.orderId) || 0;
+    const order = orderId > 0 ? await this.orderRepository.findById(orderId) : null;
+    if (!order) {
+      return { success: false, method: req?.paymentMethodIdExt, orderId, error: 'Pedido não encontrado.' };
+    }
+    if (order.statusId >= 2) {
+      return { success: false, method: req.paymentMethodIdExt, orderId, error: 'Este pedido já foi pago.' };
+    }
+    const orderTotal = Number(order.total) || 0;
+    if (!(orderTotal > 0)) {
+      return { success: false, method: req.paymentMethodIdExt, orderId, error: 'Pedido sem valor.' };
+    }
+    if (Math.abs(Number(req.amount) - orderTotal) > 0.005) {
+      logger.warn(`Payment amount from the client (${req.amount}) differs from order ${orderId} total (${orderTotal}); charging the order total`);
+    }
+
+    let effectiveAmount = orderTotal;
+    const testAllowed = req.staffCaller === true || await this.isTestCustomer(order.customerId);
+    if (testAllowed) {
       try {
         const testConfig = await this.loadTestConfig();
-        if (req.testMode || (testConfig.testEmail && req.customerEmail === testConfig.testEmail)) {
-          const isBoletoPix = ['inter-boleto', 'pix'].includes(req.paymentMethodIdExt);
-          effectiveAmount = isBoletoPix ? testConfig.testValueBoleto : testConfig.testValue;
-          logger.info(`TEST MODE: overriding amount from ${req.amount} to ${effectiveAmount} for ${req.customerEmail}`);
+        const decision = chargeAmount({
+          orderTotal,
+          method: req.paymentMethodIdExt,
+          testRequested: req.testMode === true,
+          emailMatchesTestEmail: !!testConfig.testEmail && req.customerEmail === testConfig.testEmail,
+          testAllowed,
+          testValue: testConfig.testValue,
+          testValueBoleto: testConfig.testValueBoleto,
+        });
+        if (decision.test) {
+          effectiveAmount = decision.amount;
+          logger.info(`TEST MODE: order ${orderId} charged ${effectiveAmount} instead of ${orderTotal}`);
         }
       } catch (e) { logger.error(`Test config load failed: ${(e as Error).message}`); }
     }
 
-    logger.info(`Processing payment: order=${req.orderId} method=${req.paymentMethodIdExt} amount=${effectiveAmount}`);
+    logger.info(`Processing payment: order=${orderId} method=${req.paymentMethodIdExt} amount=${effectiveAmount}`);
 
-    const effectiveReq = { ...req, amount: effectiveAmount };
+    const effectiveReq = { ...req, orderId, amount: effectiveAmount };
 
     switch (req.paymentMethodIdExt) {
       case 'cc-cielo':
@@ -122,6 +150,22 @@ export class ProcessPaymentUseCase {
         return this.processManual(effectiveReq);
       default:
         return this.processManual(effectiveReq);
+    }
+  }
+
+  /** tbCustomers.TestUser = 1 (the owner's test accounts, same flag ContratarPrefillController uses). */
+  private async isTestCustomer(customerId: number): Promise<boolean> {
+    if (!this.sequelize || !(customerId > 0)) return false;
+    try {
+      const { QueryTypes } = require('sequelize');
+      const rows = await this.sequelize.query(
+        `SELECT CAST(ISNULL(TestUser, 0) AS int) AS t FROM tbCustomers WHERE ID = :id`,
+        { replacements: { id: customerId }, type: QueryTypes.SELECT },
+      ) as any[];
+      return Number(rows?.[0]?.t) === 1;
+    } catch (e) {
+      logger.error(`TestUser lookup failed: ${(e as Error).message}`);
+      return false;
     }
   }
 

@@ -1,9 +1,11 @@
-import { Controller, Post, Get, Param, Body, Inject, Res, Req } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Inject, Res, Req, UseGuards } from '@nestjs/common';
+import { MODULE, StaffGuard, verifyStaffToken } from '../auth/StaffAuth';
+import { confirmVerifiedOrders } from '../../../application/payment/PaymentPolicy';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
-import { ProcessPaymentUseCase, PaymentRequest, PaymentResponse } from '../../../application/use-cases/ProcessPaymentUseCase';
-import { ConfirmPaymentUseCase } from '../../../application/use-cases/ConfirmPaymentUseCase';
-import { BancoInterGateway } from '../../../infrastructure/payment/BancoInterGateway';
-import { IOrderRepository } from '../../../domain/repositories/IOrderRepository';
+import type { ProcessPaymentUseCase, PaymentRequest, PaymentResponse } from '../../../application/use-cases/ProcessPaymentUseCase';
+import type { ConfirmPaymentUseCase } from '../../../application/use-cases/ConfirmPaymentUseCase';
+import type { BancoInterGateway } from '../../../infrastructure/payment/BancoInterGateway';
+import type { IOrderRepository } from '../../../domain/repositories/IOrderRepository';
 import { Logger } from '../../../shared/logger/Logger';
 
 const logger = new Logger('PaymentController');
@@ -20,8 +22,10 @@ export class PaymentController {
 
   @Post('process')
   @ApiOperation({ summary: 'Process payment for an existing order' })
-  async process(@Body() req: PaymentRequest): Promise<PaymentResponse> {
-    return this.processPayment.execute(req);
+  async process(@Body() body: PaymentRequest, @Req() req: any): Promise<PaymentResponse> {
+    // Public (visitor checkout). Only a verified staff token may unlock the legacy test price.
+    const staffCaller = !!verifyStaffToken(req?.headers?.authorization);
+    return this.processPayment.execute({ ...(body || ({} as PaymentRequest)), staffCaller });
   }
 
   @Get('status/:orderId')
@@ -57,7 +61,8 @@ export class PaymentController {
   private pixCheckCache: Record<string, number> = {};
 
   @Post('confirm/:orderId')
-  @ApiOperation({ summary: 'Manually confirm payment for an order (admin/webhook fallback)' })
+  @UseGuards(StaffGuard(MODULE.CLIENTES))
+  @ApiOperation({ summary: 'Manually confirm payment for an order (staff with Clientes)' })
   async confirmOrder(@Param('orderId') orderId: string) {
     const id = parseInt(orderId, 10);
     const result = await this.confirmPayment.execute(id, 'manual');
@@ -71,50 +76,24 @@ export class PaymentController {
    */
   @Post('webhook/banco-inter')
   @ApiOperation({ summary: 'Banco Inter webhook callback for payment notifications' })
-  async bancoInterWebhook(@Body() body: any, @Req() req: any) {
-    logger.info(`Banco Inter webhook received: ${JSON.stringify(body).substring(0, 500)}`);
+  async bancoInterWebhook(@Body() body: any) {
+    logger.info(`Banco Inter webhook received: ${JSON.stringify(body ?? null).substring(0, 500)}`);
 
-    // Banco Inter webhook payload varies by type:
-    // Boleto: { nossoNumero, seuNumero, situacao: "PAGO", ... }
-    // PIX: { endToEndId, txid, valor, ... }
-    try {
-      let orderId: number | null = null;
-
-      if (body.seuNumero) {
-        // Boleto callback — seuNumero is our orderId
-        orderId = parseInt(body.seuNumero, 10);
-      } else if (body.txid) {
-        // PIX callback — txid may contain our orderId
-        // Try to extract orderId from txid or look up by payment identifier
-        const txid = body.txid;
-        // Our PIX txid format: orderId as string, or "PEDorderId", or "static-orderId"
-        const match = txid.match(/(\d+)/);
-        if (match) orderId = parseInt(match[1], 10);
-      } else if (body.pix && Array.isArray(body.pix)) {
-        // PIX webhook array format
-        for (const pix of body.pix) {
-          if (pix.txid) {
-            const match = pix.txid.match(/(\d+)/);
-            if (match) {
-              orderId = parseInt(match[1], 10);
-              break;
-            }
-          }
-        }
+    // Public URL, so the payload is never believed: it only names candidate orders (boleto seuNumero, PIX txid),
+    // and each one is confirmed only if Banco Inter reports that order's own charge as paid.
+    const gateway = this.bancoInterGateway;
+    if (gateway) {
+      try {
+        const confirmed = await confirmVerifiedOrders(body, {
+          findOrder: (id) => this.orderRepository.findById(id),
+          checkPix: (txid) => gateway.checkPixStatus(txid),
+          checkBoleto: (nossoNumero) => gateway.checkBoletoStatus(nossoNumero),
+          confirm: (id, source) => this.confirmPayment.execute(id, source),
+        });
+        logger.info(`Banco Inter webhook: confirmed orders [${confirmed.join(',')}] after checking with Banco Inter`);
+      } catch (e) {
+        logger.error(`Webhook processing error: ${(e as Error).message}`);
       }
-
-      if (orderId && orderId > 0) {
-        const situacao = body.situacao || body.status || 'PAGO';
-        if (situacao === 'PAGO' || situacao === 'REALIZADO' || body.endToEndId) {
-          await this.confirmPayment.execute(orderId, `webhook:banco-inter:${situacao}`);
-        } else {
-          logger.info(`Webhook for order ${orderId}: situacao=${situacao} (not paid yet)`);
-        }
-      } else {
-        logger.warn(`Could not extract orderId from webhook payload`);
-      }
-    } catch (e) {
-      logger.error(`Webhook processing error: ${(e as Error).message}`);
     }
 
     // Always return 200 to acknowledge the webhook
@@ -122,7 +101,8 @@ export class PaymentController {
   }
 
   @Post('webhook/register')
-  @ApiOperation({ summary: 'Register Banco Inter webhooks for payment notifications' })
+  @UseGuards(StaffGuard(MODULE.CONFIGURACOES))
+  @ApiOperation({ summary: 'Register Banco Inter webhooks for payment notifications (staff with Configurações)' })
   async registerWebhooks() {
     if (!this.bancoInterGateway) {
       return { success: false, error: 'Banco Inter gateway not configured' };

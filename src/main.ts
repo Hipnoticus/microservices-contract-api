@@ -20,14 +20,20 @@ async function bootstrap(): Promise<void> {
 
   const app = await NestFactory.create(AppModule);
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Contract Service API')
-    .setDescription('Package contracting, order management, and payment processing')
-    .setVersion('1.0.0')
-    .addServer('/contract-service', 'API Gateway')
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api-docs', app, document);
+  // API docs only where explicitly enabled (dev). In production they mapped every payment route for an attacker
+  // (incident 20261118).
+  if (process.env.EXPOSE_API_DOCS === 'true') {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('Contract Service API')
+      .setDescription('Package contracting, order management, and payment processing')
+      .setVersion('1.0.0')
+      .addServer('/contract-service', 'API Gateway')
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api-docs', app, document);
+  } else {
+    logger.info('API docs disabled (set EXPOSE_API_DOCS=true to serve /api-docs)');
+  }
 
   await app.listen(serverPort);
   logger.info(`*** ${applicationName} listening on http://localhost:${serverPort} ***`);

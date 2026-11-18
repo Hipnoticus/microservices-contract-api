@@ -3,6 +3,8 @@ import { Order } from '../../domain/entities/Order';
 import { Sequelize, QueryTypes } from 'sequelize';
 import { Logger } from '../../shared/logger/Logger';
 import * as crypto from 'crypto';
+import { HttpException, HttpStatus } from '@nestjs/common';
+import { packagePrice } from '../payment/PaymentPolicy';
 
 const logger = new Logger('CreateOrderUseCase');
 
@@ -47,6 +49,20 @@ export class CreateOrderUseCase {
   ) {}
 
   async execute(dto: CreateOrderDTO): Promise<Order> {
+    // The body is public and untrusted: the order total is the package price in tbProducts, never dto.total.
+    const [product] = await this.sequelize.query(
+      `SELECT ID, NormalPrice, PromotionalPrice, Blocked FROM tbProducts WHERE ID = :id`,
+      { replacements: { id: Number(dto?.packageId) || 0 }, type: QueryTypes.SELECT },
+    ) as any[];
+    const price = packagePrice(product);
+    if (price === null) {
+      throw new HttpException({ error: 'Pacote inválido.' }, HttpStatus.BAD_REQUEST);
+    }
+    if (Math.abs(Number(dto.total) - price) > 0.005) {
+      logger.warn(`Order total from the client (${dto.total}) differs from package ${dto.packageId} price (${price}); using the package price`);
+    }
+    dto = { ...dto, total: price };
+
     const t = await this.sequelize.transaction();
     try {
       // 1. Find or create customer

@@ -22,7 +22,7 @@ export class ConfigController {
 
     return {
       maxInstallments: parseInt(cfg['orders.transaction.max_installments'] || '5', 10),
-      testEmail: cfg['orders.transaction.test.email'] || '',
+      // testEmail is no longer published (incident 20261118): it used to unlock the test price for anyone.
       testValue: parseFloat((cfg['orders.transaction.test.value'] || '0.01').replace(',', '.')),
       testValueBoleto: parseFloat((cfg['orders.transaction.test.value_boleto'] || '1.00').replace(',', '.')),
       defaultOrderStatus: parseInt(cfg['orders.status.default'] || '1', 10),
