@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Param, Body, Inject, Headers, HttpException, HttpStatus } from '@nestjs/common';
 import { Sequelize } from 'sequelize';
-import { CustomerCard } from '../../../infrastructure/persistence/models/CustomerCardModel';
+import { CustomerCard, sqlNow } from '../../../infrastructure/persistence/models/CustomerCardModel';
 import { CieloGateway } from '../../../infrastructure/payment/CieloGateway';
 import { Logger } from '../../../shared/logger/Logger';
 import { requireCustomerOrStaff } from '../auth/StaffAuth';
@@ -80,7 +80,7 @@ export class CustomerCardController {
         existing.cardToken = tokenResult.cardToken;
         existing.holderName = body.holderName;
         existing.expirationDate = body.expirationDate;
-        existing.dateModified = new Date();
+        existing.dateModified = sqlNow();
         if (body.alias) existing.alias = body.alias;
         await existing.save();
         logger.info(`Updated card token for customer ${body.customerId}, card ****${lastFour}`);
@@ -113,15 +113,15 @@ export class CustomerCardController {
     // The owner comes from the card itself, not from the body
     const customerId = await this.ownerOf(id);
     requireCustomerOrStaff(auth, customerId);
-    await CustomerCard.update({ isDefault: false, dateModified: new Date() }, { where: { customerID: customerId } });
-    await CustomerCard.update({ isDefault: true, dateModified: new Date() }, { where: { id: parseInt(id, 10), customerID: customerId } });
+    await CustomerCard.update({ isDefault: false, dateModified: sqlNow() }, { where: { customerID: customerId } });
+    await CustomerCard.update({ isDefault: true, dateModified: sqlNow() }, { where: { id: parseInt(id, 10), customerID: customerId } });
     return { success: true };
   }
 
   @Delete(':id')
   async deleteCard(@Headers('authorization') auth: string, @Param('id') id: string) {
     requireCustomerOrStaff(auth, await this.ownerOf(id));
-    await CustomerCard.update({ blocked: true, dateModified: new Date() }, { where: { id: parseInt(id, 10) } });
+    await CustomerCard.update({ blocked: true, dateModified: sqlNow() }, { where: { id: parseInt(id, 10) } });
     return { success: true };
   }
 }

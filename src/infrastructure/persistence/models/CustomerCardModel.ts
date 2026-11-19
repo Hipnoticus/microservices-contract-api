@@ -1,4 +1,11 @@
-import { Sequelize, DataTypes, Model } from 'sequelize';
+import { Sequelize, DataTypes, Model, fn, literal } from 'sequelize';
+
+/**
+ * DateCreated/DateModified are SQL Server datetime. Sequelize's mssql dialect writes a JS Date as
+ * '2026-11-19 13:10:41.123 +00:00', which datetime cannot parse ('Conversion failed when converting date
+ * and/or time'), so every write of these columns uses the server clock instead, like the raw queries do.
+ */
+export const sqlNow = (): any => fn('GETDATE');
 
 export class CustomerCard extends Model {
   declare id: number;
@@ -27,8 +34,8 @@ export function initializeCustomerCardModel(sequelize: Sequelize): void {
     isDefault: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'IsDefault' },
     alias: { type: DataTypes.STRING(50), allowNull: true, field: 'Alias' },
     blocked: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'Blocked' },
-    dateCreated: { type: DataTypes.DATE, defaultValue: DataTypes.NOW, field: 'DateCreated' },
-    dateModified: { type: DataTypes.DATE, defaultValue: DataTypes.NOW, field: 'DateModified' },
+    dateCreated: { type: DataTypes.DATE, defaultValue: literal('GETDATE()'), field: 'DateCreated' },
+    dateModified: { type: DataTypes.DATE, defaultValue: literal('GETDATE()'), field: 'DateModified' },
   }, {
     sequelize,
     tableName: 'tbCustomerCards',

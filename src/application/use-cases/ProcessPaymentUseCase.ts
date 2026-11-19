@@ -13,13 +13,21 @@ import { BancoInterGateway, BoletoResult, PixCobrancaResult } from '../../infras
 import { IOrderRepository } from '../../domain/repositories/IOrderRepository';
 import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEmailUseCase';
 import { CreateSessionsUseCase } from './CreateSessionsUseCase';
-import { CustomerCard } from '../../infrastructure/persistence/models/CustomerCardModel';
+import { CustomerCard, sqlNow } from '../../infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from '../../shared/logger/Logger';
 import { chargeAmount } from '../payment/PaymentPolicy';
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { DAY_NAMES, loadAgenda, slotTaken, validateOrderSchedule, validatePaymentDates } from '../order/ScheduleRules';
 import { orderSubmissions } from '../order/OrderSubmissions';
 import { parseIsoDate } from '../order/SignupValidation';
+/**
+ * Boleto link for the e-mails. The PDF route needs the customer's token (it carries name, CPF and address), which
+ * an inbox click does not have, so the e-mail opens the Moses page /boleto/:nossoNumero: login first, then the PDF.
+ */
+export function boletoPageUrl(nossoNumero: string | null | undefined, base = process.env.MOSES_URL || 'https://moses.hipnoticus.com.br'): string {
+  const n = String(nossoNumero || '').trim();
+  return n ? `${base.replace(/\/+$/, '')}/boleto/${encodeURIComponent(n)}` : '';
+}
 
 /** yyyy-mm-dd (or a Date) to "dd/mm/aaaa"; anything else as is. */
 function brDate(v: unknown): string {
@@ -619,7 +627,7 @@ export class ProcessPaymentUseCase {
       transactionStatus: response.authorized
         ? '<strong style="color: green;">AUTORIZADA</strong>'
         : '<strong style="color: orange;">EFETUADA</strong>',
-      boletoUrl: response.boletoUrl || '',
+      boletoUrl: response.boletoUrl ? boletoPageUrl(response.nossoNumero) : '',
       boletoCodigoBarras: response.linhaDigitavel || response.codigoBarras || '',
       pixCopiaECola: response.pixCopiaECola || '',
       depositValue: '',
@@ -714,7 +722,7 @@ export class ProcessPaymentUseCase {
       existing.cardToken = tokenResult.cardToken;
       existing.holderName = req.card.holder;
       existing.expirationDate = req.card.expirationDate;
-      existing.dateModified = new Date();
+      existing.dateModified = sqlNow();
       await existing.save();
       logger.info(`Updated saved card for customer ${customerId}: ${brand} ****${lastFour}`);
     } else {
