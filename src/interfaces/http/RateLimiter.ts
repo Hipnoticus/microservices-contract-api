@@ -54,3 +54,5 @@ const envInt = (name: string, fallback: number) => {
 export const orderRateLimiter = new RateLimiter(envInt('ORDER_RATE_LIMIT_PER_HOUR', 5), HOUR);
 /** POST /payments/process: retries of a declined card are normal, so a looser limit (PAYMENT_RATE_LIMIT_PER_HOUR, default 20). */
 export const paymentRateLimiter = new RateLimiter(envInt('PAYMENT_RATE_LIMIT_PER_HOUR', 20), HOUR);
+/** POST /leads/register: the first Contratar step, once per visitor (LEAD_RATE_LIMIT_PER_HOUR, default 10). */
+export const leadRateLimiter = new RateLimiter(envInt('LEAD_RATE_LIMIT_PER_HOUR', 10), HOUR);

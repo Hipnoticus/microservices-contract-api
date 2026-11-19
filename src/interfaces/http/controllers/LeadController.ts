@@ -1,7 +1,11 @@
-import { Controller, Post, Body, Inject } from '@nestjs/common';
+import { Controller, Post, Body, Inject, Req, HttpException, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Sequelize, QueryTypes } from 'sequelize';
 import { Logger } from '../../../shared/logger/Logger';
+import { validateLead, type Lead } from '../../../application/order/SignupValidation';
+import { clientIp } from '../ClientIp';
+import { leadRateLimiter } from '../RateLimiter';
+import { verifyStaffToken } from '../auth/StaffAuth';
 
 const logger = new Logger('LeadController');
 
@@ -9,6 +13,11 @@ const logger = new Logger('LeadController');
  * Interspire Email Marketer integration.
  * Registers unlogged visitors as subscribers on the mailing list
  * at https://email.hipnoterapia.org/xml.php
+ *
+ * Public (the first Contratar step in Moses), so it is rate limited per IP (LEAD_RATE_LIMIT_PER_HOUR) and the body
+ * is validated (full name, a permanent e-mail, valid phone/CPF when sent). The Interspire API credentials come from
+ * the environment: INTERSPIRE_USERNAME, INTERSPIRE_TOKEN (zeus .env.prod; dev: untracked secrets/interspire.env).
+ * Without a token the lead is still stored in tbLeads and Interspire is skipped.
  *
  * Custom field IDs (from ListCILog.txt):
  *   26 = Nome Completo
@@ -22,49 +31,62 @@ const logger = new Logger('LeadController');
 @ApiTags('Leads')
 @Controller('leads')
 export class LeadController {
-  private readonly interspireUrl = 'https://email.hipnoterapia.org/xml.php';
-  private readonly interspireUsername = 'henrique';
-  private readonly interspireToken = '6786356436b7b4909106613bbd0c4203c06d9d56';
-  private readonly mailingListId = '26'; // Probable clients list
+  private readonly interspireUrl = process.env.INTERSPIRE_URL || 'https://email.hipnoterapia.org/xml.php';
+  private readonly interspireUsername = process.env.INTERSPIRE_USERNAME || 'henrique';
+  private readonly interspireToken = (process.env.INTERSPIRE_TOKEN || '').trim();
+  private readonly mailingListId = process.env.INTERSPIRE_LEADS_LIST_ID || '26'; // Probable clients list
+  private warnedNoToken = false;
 
   constructor(@Inject('DATABASE') private readonly db: Sequelize) {}
 
   @Post('register')
-  @ApiOperation({ summary: 'Register a lead (unlogged visitor) to Interspire Email Marketer' })
-  async registerLead(@Body() body: { name: string; email: string; phone?: string; cpf?: string; packageName?: string }) {
-    const { name, email, phone, cpf, packageName } = body;
+  @ApiOperation({ summary: 'Register a lead (unlogged visitor) to Interspire Email Marketer (public, validated, rate limited per IP)' })
+  async registerLead(@Body() body: any, @Req() req: any) {
+    if (!verifyStaffToken(req?.headers?.authorization)) leadRateLimiter.check(clientIp(req), 'cadastro');
+    const v = validateLead(body);
+    if (!v.ok) throw new HttpException({ success: false, error: v.error }, HttpStatus.BAD_REQUEST);
+    const { name, email, phone, cpf, packageName } = v.lead;
 
-    if (!name || !email) {
-      return { success: false, error: 'Nome e e-mail são obrigatórios.' };
-    }
-
-    const nameParts = name.trim().split(/\s+/);
+    const nameParts = name.split(' ');
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ') || '';
 
     // 1. Register on Interspire Email Marketer
-    try {
-      const xml = this.buildInterspireXml(email, name, firstName, lastName, phone || '', cpf || '');
-      const response = await fetch(this.interspireUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/xml' },
-        body: xml,
-      });
-      const responseText = await response.text();
-      const success = responseText.includes('<status>SUCCESS</status>');
-      const alreadyExists = responseText.includes('already exists');
-
-      if (success || alreadyExists) {
-        logger.info(`Lead registered on Interspire: ${email} (${success ? 'new' : 'already existed'})`);
-      } else {
-        logger.warn(`Interspire registration issue for ${email}: ${responseText.substring(0, 200)}`);
+    if (!this.interspireToken) {
+      if (!this.warnedNoToken) {
+        logger.warn('INTERSPIRE_TOKEN is not set: leads are stored in tbLeads but not sent to Interspire');
+        this.warnedNoToken = true;
       }
-    } catch (err: any) {
-      logger.error(`Interspire API error: ${err.message}`);
-      // Non-blocking — continue even if Interspire is down
+    } else {
+      try {
+        const xml = this.buildInterspireXml(email, name, firstName, lastName, phone, cpf);
+        const response = await fetch(this.interspireUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/xml' },
+          body: xml,
+          signal: AbortSignal.timeout(15000),
+        });
+        const responseText = await response.text();
+        const success = responseText.includes('<status>SUCCESS</status>');
+        const alreadyExists = responseText.includes('already exists');
+        if (success || alreadyExists) {
+          logger.info(`Lead registered on Interspire: ${email} (${success ? 'new' : 'already existed'})`);
+        } else {
+          logger.warn(`Interspire registration issue for ${email}: ${responseText.substring(0, 200)}`);
+        }
+      } catch (err: any) {
+        logger.error(`Interspire API error: ${err.message}`);
+        // Non-blocking — continue even if Interspire is down
+      }
     }
 
-    // 2. Optionally log the lead in the local database for tracking
+    // 2. Log the lead in the local database for tracking
+    await this.storeLead({ name, email, phone, cpf, packageName });
+
+    return { success: true };
+  }
+
+  private async storeLead(lead: Lead): Promise<void> {
     try {
       // Check if tbLeads exists, create if not
       await this.db.query(`
@@ -83,27 +105,27 @@ export class LeadController {
           CREATE INDEX IX_Leads_Email ON tbLeads(Email);
         END
       `);
-
       await this.db.query(
         `INSERT INTO tbLeads (Name, Email, Phone, CPF, PackageName) VALUES (:name, :email, :phone, :cpf, :pkg)`,
-        { replacements: { name, email, phone: phone || null, cpf: cpf || null, pkg: packageName || null }, type: QueryTypes.INSERT },
+        {
+          replacements: { name: lead.name, email: lead.email, phone: lead.phone || null, cpf: lead.cpf || null, pkg: lead.packageName || null },
+          type: QueryTypes.INSERT,
+        },
       );
     } catch (err: any) {
       logger.warn(`Failed to log lead locally: ${err.message}`);
     }
-
-    return { success: true };
   }
 
   private buildInterspireXml(email: string, fullName: string, firstName: string, lastName: string, phone: string, cpf: string): string {
     return `<xmlrequest>
-  <username>${this.interspireUsername}</username>
-  <usertoken>${this.interspireToken}</usertoken>
+  <username>${this.escapeXml(this.interspireUsername)}</username>
+  <usertoken>${this.escapeXml(this.interspireToken)}</usertoken>
   <requesttype>subscribers</requesttype>
   <requestmethod>AddSubscriberToList</requestmethod>
   <details>
     <emailaddress>${this.escapeXml(email)}</emailaddress>
-    <mailinglist>${this.mailingListId}</mailinglist>
+    <mailinglist>${this.escapeXml(this.mailingListId)}</mailinglist>
     <format>html</format>
     <confirmed>yes</confirmed>
     <customfields>

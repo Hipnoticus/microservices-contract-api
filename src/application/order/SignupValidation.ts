@@ -178,3 +178,33 @@ export function validateSignupCustomer(c: any, today = todayBrt()): { ok: true; 
     },
   };
 }
+
+export interface Lead {
+  name: string;
+  email: string;
+  phone: string;
+  cpf: string;
+  packageName: string;
+}
+
+/**
+ * POST /leads/register (the first Contratar step, public): full name and a permanent e-mail are required; phone and
+ * CPF are optional but must be valid when sent. Returns the cleaned lead (phone and CPF as digits) or a pt-BR error.
+ */
+export function validateLead(b: any): { ok: true; lead: Lead } | { ok: false; error: string } {
+  const errors: string[] = [];
+  const name = text(b?.name).replace(/\s+/g, ' ');
+  const email = text(b?.email);
+  const phone = digits(b?.phone);
+  const cpf = digits(b?.cpf);
+  if (name.length < 3 || name.length > 200 || !name.includes(' ')) errors.push('nome completo');
+  if (!isValidEmail(email)) errors.push('e-mail válido');
+  else if (isDisposableEmail(email)) errors.push('e-mail permanente (endereços temporários/descartáveis não são aceitos)');
+  if (phone && !isValidPhone(phone)) errors.push('telefone com DDD (10 ou 11 dígitos)');
+  if (cpf && !isValidCpf(cpf)) errors.push('CPF válido');
+  if (errors.length) return { ok: false, error: `Dados inválidos. Informe: ${errors.join('; ')}.` };
+  return {
+    ok: true,
+    lead: { name, email, phone: phone.replace(/^55(?=\d{10,11}$)/, ''), cpf, packageName: text(b?.packageName).slice(0, 200) },
+  };
+}

@@ -86,6 +86,15 @@ export class SequelizeOrderRepository implements IOrderRepository {
     return model ? this.toDomain(model) : null;
   }
 
+  async ownsPaymentIdentifier(customerId: number, identifier: string): Promise<boolean> {
+    if (!customerId || !identifier) return false;
+    const rows = await OrderModel.sequelize!.query<any>(
+      `SELECT TOP 1 ID FROM tbOrders WHERE CustomerID = :customerId AND Identifier = :identifier`,
+      { replacements: { customerId, identifier }, type: QueryTypes.SELECT },
+    );
+    return rows.length > 0;
+  }
+
   async updatePayment(id: number, identifier: string, registry: string): Promise<Order | null> {
     await OrderModel.sequelize!.query(
       `UPDATE tbOrders SET Identifier = :identifier, Registry = :registry, DateModified = GETDATE() WHERE ID = :id`,

@@ -1,7 +1,7 @@
-import { Controller, Get, Post, Param, Body, Inject, Req } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Inject, Req, Headers } from '@nestjs/common';
 import { clientIp, userAgent } from '../ClientIp';
 import { orderRateLimiter } from '../RateLimiter';
-import { verifyStaffToken } from '../auth/StaffAuth';
+import { assertNotCustomer, assertOwner, verifyStaffToken } from '../auth/StaffAuth';
 import { requireTurnstile, TURNSTILE_BODY_FIELD } from '../Turnstile';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { CreateOrderUseCase, type CreateOrderDTO } from '../../../application/use-cases/CreateOrderUseCase';
@@ -17,20 +17,24 @@ export class OrderController {
 
   @Get()
   @ApiOperation({ summary: 'List all orders' })
-  async findAll() {
+  async findAll(@Headers() headers: Record<string, any>) {
+    assertNotCustomer(headers);
     return this.orderRepository.findAll();
   }
 
   @Get('customer/:customerId')
   @ApiOperation({ summary: 'Get orders by customer ID' })
-  async findByCustomer(@Param('customerId') customerId: number) {
+  async findByCustomer(@Headers() headers: Record<string, any>, @Param('customerId') customerId: number) {
+    assertOwner(headers, Number(customerId));
     return this.orderRepository.findByCustomerId(customerId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get order by ID' })
-  async findById(@Param('id') id: number) {
-    return this.orderRepository.findById(id);
+  async findById(@Headers() headers: Record<string, any>, @Param('id') id: number) {
+    const order = await this.orderRepository.findById(id);
+    if (order) assertOwner(headers, order.customerId);
+    return order;
   }
 
   @Post()

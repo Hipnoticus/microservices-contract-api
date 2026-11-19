@@ -1,15 +1,18 @@
-import { Controller, Get, Param, Inject } from '@nestjs/common';
+import { Controller, Get, Param, Inject, Headers } from '@nestjs/common';
 import { Sequelize, QueryTypes } from 'sequelize';
 import { Logger } from '../../../shared/logger/Logger';
+import { assertOwner } from '../auth/StaffAuth';
 
 const logger = new Logger('TreatmentController');
 
+/** Treatments and their sessions. A customer token sees only its own (the gateway checks the path id too). */
 @Controller('treatments')
 export class TreatmentController {
   constructor(@Inject('DATABASE') private readonly db: Sequelize) {}
 
   @Get('customer/:customerId')
-  async getTreatmentsByCustomer(@Param('customerId') customerId: string) {
+  async getTreatmentsByCustomer(@Headers() headers: Record<string, any>, @Param('customerId') customerId: string) {
+    assertOwner(headers, parseInt(customerId, 10));
     const treatments = await this.db.query(`
       SELECT t.ID, t.Customer, t.MainGoal, t.OrderNumber, t.SessionsNumber,
              t.PhaseDefined, t.PhaseDetected,
@@ -44,7 +47,12 @@ export class TreatmentController {
   }
 
   @Get(':treatmentId/sessions')
-  async getSessionsByTreatment(@Param('treatmentId') treatmentId: string) {
+  async getSessionsByTreatment(@Headers() headers: Record<string, any>, @Param('treatmentId') treatmentId: string) {
+    // The owner comes from the treatment: a treatment id alone was enough to read another customer's sessions
+    const owner = await this.db.query<any>('SELECT Customer AS customer FROM tbTreatments WHERE ID = :id',
+      { replacements: { id: parseInt(treatmentId, 10) || 0 }, type: QueryTypes.SELECT });
+    if (!owner.length) return [];
+    assertOwner(headers, Number(owner[0].customer));
     const sessions = await this.db.query(`
       SELECT s.ID, s.ClientID, s.Treatment, s.TreatmentID, s.DateBegins, s.DateEnds,
              s.Status, s.Value, s.PaymentType, s.Name, s.Notes, s.OrderNumber,

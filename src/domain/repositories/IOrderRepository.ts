@@ -8,4 +8,6 @@ export interface IOrderRepository {
   create(order: Partial<Order>, transaction?: unknown): Promise<Order>;
   updateStatus(id: number, statusId: number): Promise<Order | null>;
   updatePayment(id: number, identifier: string, registry: string): Promise<Order | null>;
+  /** True when one of the customer's orders carries this payment identifier (boleto nossoNumero, PIX txid). */
+  ownsPaymentIdentifier(customerId: number, identifier: string): Promise<boolean>;
 }

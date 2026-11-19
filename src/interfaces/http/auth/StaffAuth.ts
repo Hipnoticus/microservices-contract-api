@@ -106,6 +106,43 @@ export function requireCustomerOrStaff(authorization: string | undefined, custom
 }
 
 /**
+ * Who a request acts for, for owner checks (defense in depth behind the gateway's owner rules, audit 2026-11-18 H2).
+ * A verified customer token, or the gateway's marker for one (X-User-Type: customer + X-User-Id; the gateway strips
+ * client-sent X-User-* headers), is a customer. A staff token or marker is staff. Anything else is a server-side
+ * caller (the gateway Basic credential, container-to-container), which the owner checks leave unchanged.
+ */
+export type Principal = { kind: 'customer'; id: number } | { kind: 'staff' } | { kind: 'internal' };
+export function principalOf(headers: Record<string, any> | undefined): Principal {
+  const h = headers || {};
+  const caller = verifyCaller(h.authorization);
+  if (caller?.kind === 'staff') return { kind: 'staff' };
+  if (caller?.kind === 'customer') return caller;
+  const one = (v: any) => (Array.isArray(v) ? v[0] : v ?? '').toString().trim();
+  const type = one(h['x-user-type']).toLowerCase();
+  if (type === 'customer') {
+    const id = /^\d{1,9}$/.test(one(h['x-user-id'])) ? parseInt(one(h['x-user-id']), 10) : 0;
+    return { kind: 'customer', id };
+  }
+  if (type === 'user') return { kind: 'staff' };
+  // A Bearer token that does not verify (forged, expired, other key) owns nothing
+  if (one(h.authorization).startsWith('Bearer ')) return { kind: 'customer', id: 0 };
+  return { kind: 'internal' };
+}
+/** 403 when a customer acts on a row whose customer id is not theirs. Staff and server-side callers pass. */
+export function assertOwner(headers: Record<string, any> | undefined, ownerId: number | null | undefined): void {
+  const p = principalOf(headers);
+  if (p.kind !== 'customer') return;
+  if (!p.id || !Number.isFinite(Number(ownerId)) || Number(ownerId) !== p.id) {
+    throw new HttpException({ error: 'Sem permissão para este cliente.' }, HttpStatus.FORBIDDEN);
+  }
+}
+/** 403 for a customer on a staff-only listing. Staff and server-side callers pass. */
+export function assertNotCustomer(headers: Record<string, any> | undefined): void {
+  if (principalOf(headers).kind === 'customer') {
+    throw new HttpException({ error: 'Sem permissão.' }, HttpStatus.FORBIDDEN);
+  }
+}
+/**
  * Guard factory: StaffGuard() needs any staff token; StaffGuard(6, 7) needs one of those modules.
  * The verified user is put on request.staff.
  */

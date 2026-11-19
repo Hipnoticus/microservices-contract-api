@@ -1,5 +1,5 @@
 import { Controller, Post, Get, Param, Body, Inject, Res, Req, UseGuards } from '@nestjs/common';
-import { MODULE, StaffGuard, verifyStaffToken } from '../auth/StaffAuth';
+import { MODULE, StaffGuard, principalOf, verifyStaffToken } from '../auth/StaffAuth';
 import { confirmVerifiedOrders } from '../../../application/payment/PaymentPolicy';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import type { ProcessPaymentUseCase, PaymentRequest, PaymentResponse } from '../../../application/use-cases/ProcessPaymentUseCase';
@@ -131,7 +131,19 @@ export class PaymentController {
 
   @Get('boleto-pdf/:nossoNumero')
   @ApiOperation({ summary: 'Get boleto PDF by nossoNumero' })
-  async getBoletoPdf(@Param('nossoNumero') nossoNumero: string, @Res() res: any): Promise<void> {
+  async getBoletoPdf(@Param('nossoNumero') nossoNumero: string, @Res() res: any, @Req() req: any): Promise<void> {
+    // The PDF carries the payer's name, CPF and address: a customer gets only the boleto of one of their orders
+    // (tbOrders.Identifier holds the nossoNumero). Staff and server-side callers are unchanged.
+    const who = principalOf(req?.headers);
+    if (who.kind === 'customer') {
+      const owned = who.id > 0 && String(nossoNumero || '').length <= 100
+        ? await this.orderRepository.ownsPaymentIdentifier(who.id, String(nossoNumero))
+        : false;
+      if (!owned) {
+        res.status(403).json({ error: 'Sem permissão para este boleto.' });
+        return;
+      }
+    }
     if (!this.bancoInterGateway) {
       res.status(503).json({ error: 'Banco Inter gateway not configured' });
       return;
