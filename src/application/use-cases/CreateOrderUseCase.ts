@@ -8,6 +8,7 @@ import { packagePrice } from '../payment/PaymentPolicy';
 import { SignupCustomer, validateSignupCustomer } from '../order/SignupValidation';
 import { loadAgenda, validateOrderSchedule } from '../order/ScheduleRules';
 import { orderSubmissions } from '../order/OrderSubmissions';
+import type { ScheduleRulesPort } from '../../infrastructure/schedule/ScheduleServiceClient';
 
 const logger = new Logger('CreateOrderUseCase');
 
@@ -61,6 +62,8 @@ export class CreateOrderUseCase {
   constructor(
     private readonly orderRepository: IOrderRepository,
     private readonly sequelize: Sequelize,
+    /** ScheduleAPI when SCHEDULE_SERVICE_ENABLED=true; null keeps the local ScheduleRules check. */
+    private readonly scheduleRules: ScheduleRulesPort | null = null,
   ) {}
 
   async execute(dto: CreateOrderDTO, meta: RequestMeta = { ip: 'unknown', userAgent: '' }): Promise<Order> {
@@ -82,11 +85,12 @@ export class CreateOrderUseCase {
     if (installments === null) throw bad('Número de parcelas inválido.');
 
     // Weekday and time of the 1ª consulta and of the weekly sessions must be offered slots in tbConfig.
-    const [appointments, sessions] = await Promise.all([
-      loadAgenda(this.sequelize, 'schedule.appointments'),
-      loadAgenda(this.sequelize, 'schedule.sessions'),
-    ]);
-    const schedule = validateOrderSchedule(appointments, sessions, dto);
+    const schedule = this.scheduleRules
+      ? await this.scheduleRules.validateOrderSchedule(dto)
+      : await Promise.all([
+        loadAgenda(this.sequelize, 'schedule.appointments'),
+        loadAgenda(this.sequelize, 'schedule.sessions'),
+      ]).then(([appointments, sessions]) => validateOrderSchedule(appointments, sessions, dto));
     if (!schedule.ok) {
       logger.warn(`Order refused (ip ${meta.ip}): ${schedule.error} [${dto.firstAppointmentDay} ${dto.firstAppointmentHour} / ${dto.sessionDay} ${dto.sessionHour}]`);
       throw bad(schedule.error);

@@ -11,7 +11,7 @@
  */
 import { IOrderRepository } from '../../domain/repositories/IOrderRepository';
 import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEmailUseCase';
-import { CreateSessionsUseCase } from './CreateSessionsUseCase';
+import type { SessionReservations } from '../../infrastructure/schedule/ScheduleServiceClient';
 import { Logger } from '../../shared/logger/Logger';
 import { orderSubmissions } from '../order/OrderSubmissions';
 
@@ -22,7 +22,7 @@ export class ConfirmPaymentUseCase {
     private readonly orderRepository: IOrderRepository,
     private readonly sendEmailUseCase: SendConfirmationEmailUseCase | null,
     private readonly sequelize: any,
-    private readonly createSessionsUseCase?: CreateSessionsUseCase | null,
+    private readonly createSessionsUseCase?: SessionReservations | null,
   ) {}
 
   async execute(orderId: number, source: string): Promise<boolean> {

@@ -12,6 +12,7 @@ import { ProcessPaymentUseCase } from './application/use-cases/ProcessPaymentUse
 import { SendConfirmationEmailUseCase } from './application/use-cases/SendConfirmationEmailUseCase';
 import { ConfirmPaymentUseCase } from './application/use-cases/ConfirmPaymentUseCase';
 import { CreateSessionsUseCase } from './application/use-cases/CreateSessionsUseCase';
+import { ScheduleServiceClient, scheduleServiceEnabled } from './infrastructure/schedule/ScheduleServiceClient';
 import { CieloGateway } from './infrastructure/payment/CieloGateway';
 import { BancoInterGateway } from './infrastructure/payment/BancoInterGateway';
 import { PaymentPollingService } from './infrastructure/payment/PaymentPollingService';
@@ -138,7 +139,8 @@ const logger = new Logger('AppModule');
     },
     {
       provide: CreateOrderUseCase,
-      useFactory: (repo: SequelizeOrderRepository, db: Sequelize) => new CreateOrderUseCase(repo, db),
+      useFactory: (repo: SequelizeOrderRepository, db: Sequelize) =>
+        new CreateOrderUseCase(repo, db, scheduleServiceEnabled() ? new ScheduleServiceClient(db) : null),
       inject: ['ORDER_REPOSITORY', 'DATABASE'],
     },
     {
@@ -194,15 +196,17 @@ const logger = new Logger('AppModule');
     {
       provide: 'PROCESS_PAYMENT',
       useFactory: (repo: SequelizeOrderRepository, cielo: CieloGateway | null, inter: BancoInterGateway | null, db: Sequelize, emailUseCase: SendConfirmationEmailUseCase) => {
-        const createSessions = new CreateSessionsUseCase(db);
-        return new ProcessPaymentUseCase(repo, cielo, inter, db, emailUseCase, createSessions);
+        // SCHEDULE_SERVICE_ENABLED=true: slot checks, reservation and confirmation go to ScheduleAPI (SRP phase 3)
+        const agenda = scheduleServiceEnabled() ? new ScheduleServiceClient(db) : null;
+        const createSessions = agenda ?? new CreateSessionsUseCase(db);
+        return new ProcessPaymentUseCase(repo, cielo, inter, db, emailUseCase, createSessions, agenda);
       },
       inject: ['ORDER_REPOSITORY', 'CIELO_GATEWAY', 'BANCO_INTER_GATEWAY', 'DATABASE', 'SEND_EMAIL'],
     },
     {
       provide: 'CONFIRM_PAYMENT',
       useFactory: (repo: SequelizeOrderRepository, emailUseCase: SendConfirmationEmailUseCase, db: Sequelize) => {
-        const createSessions = new CreateSessionsUseCase(db);
+        const createSessions = scheduleServiceEnabled() ? new ScheduleServiceClient(db) : new CreateSessionsUseCase(db);
         return new ConfirmPaymentUseCase(repo, emailUseCase, db, createSessions);
       },
       inject: ['ORDER_REPOSITORY', 'SEND_EMAIL', 'DATABASE'],

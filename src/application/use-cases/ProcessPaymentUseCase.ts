@@ -12,7 +12,7 @@ import { CieloGateway, CieloCardData, CieloTransactionResult } from '../../infra
 import { BancoInterGateway, BoletoResult, PixCobrancaResult } from '../../infrastructure/payment/BancoInterGateway';
 import { IOrderRepository } from '../../domain/repositories/IOrderRepository';
 import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEmailUseCase';
-import { CreateSessionsUseCase } from './CreateSessionsUseCase';
+import type { ScheduleRulesPort, SessionReservations } from '../../infrastructure/schedule/ScheduleServiceClient';
 import { CustomerCard, sqlNow } from '../../infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from '../../shared/logger/Logger';
 import { chargeAmount } from '../payment/PaymentPolicy';
@@ -121,7 +121,9 @@ export class ProcessPaymentUseCase {
     private readonly bancoInterGateway: BancoInterGateway | null,
     private readonly sequelize?: any,
     private readonly sendEmailUseCase?: SendConfirmationEmailUseCase | null,
-    private readonly createSessionsUseCase?: CreateSessionsUseCase | null,
+    private readonly createSessionsUseCase?: SessionReservations | null,
+    /** ScheduleAPI when SCHEDULE_SERVICE_ENABLED=true; null keeps the local ScheduleRules checks. */
+    private readonly scheduleRules: ScheduleRulesPort | null = null,
   ) {}
 
   async execute(req: PaymentRequest): Promise<PaymentResponse> {
@@ -199,6 +201,11 @@ export class ProcessPaymentUseCase {
       logger.warn(`Payment refused for order ${order.id} (ip ${req.clientIp}): ${error}`);
       throw new HttpException({ error }, HttpStatus.BAD_REQUEST);
     };
+    if (this.scheduleRules) {
+      const checked = await this.scheduleRules.checkReservation(order, req.firstAppointmentDay, req.sessionDay);
+      if (!checked.ok) return refuse(checked.error || 'Horário indisponível. Escolha o horário novamente.');
+      return;
+    }
     const [appointments, sessions] = await Promise.all([
       loadAgenda(this.sequelize, 'schedule.appointments'),
       loadAgenda(this.sequelize, 'schedule.sessions'),
