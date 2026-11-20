@@ -1,12 +1,20 @@
 /**
- * Banco Inter API v2 — Boleto + PIX Gateway
+ * Banco Inter API — Boleto (Cobrança v3 "bolepix") + PIX Gateway
  *
  * Mirrors legacy GerarBoletoNovo() and PIX from PacotesContratar.aspx.cs
- * Uses OAuth2 client_credentials flow + REST API.
+ * Uses OAuth2 client_credentials flow + REST API with mTLS.
  *
  * Endpoints:
  *   Sandbox:    https://cdpj-sandbox.partners.uatinter.co
  *   Production: https://cdpj.partners.bancointer.com.br
+ *
+ * Boletos use Cobrança v3 (/cobranca/v3/cobrancas). Inter retired v2 (/cobranca/v2/boletos), which now answers a
+ * plain-text "404 page not found" (seen in Moses as {"raw":"404 page not found"}, 2026-11-20). In v3 the POST only
+ * returns a codigoSolicitacao and the boleto + PIX are issued asynchronously, so createBoleto polls
+ * GET /cobrancas/{codigoSolicitacao} until the barcode exists. Every later call (details, status, PDF, cancel) is by
+ * codigoSolicitacao, so that is the identifier stored in tbOrders.Identifier and returned as `nossoNumero` (the name
+ * Moses, the e-mails and the /boleto-pdf/:nossoNumero route already use). The bank's own nossoNumero is
+ * `bankNossoNumero`.
  */
 import { Logger } from '../../shared/logger/Logger';
 import * as fs from 'fs';
@@ -27,7 +35,10 @@ export interface BancoInterConfig {
 
 export interface BoletoResult {
   success: boolean;
+  /** Cobrança v3 codigoSolicitacao: the identifier for every later call (kept under the historical name). */
   nossoNumero: string | null;
+  /** The bank's nossoNumero printed on the boleto, when already issued. */
+  bankNossoNumero?: string | null;
   linhaDigitavel: string | null;
   codigoBarras: string | null;
   pdfUrl: string | null;
@@ -45,17 +56,102 @@ export interface PixCobrancaResult {
   error: string | null;
 }
 
+/** One HTTPS call: status code plus the parsed JSON body ({ raw } when the body is not JSON). */
+export type InterTransport = (url: string, method: string, headers: Record<string, string>, body?: string) => Promise<{ status: number; data: any }>;
+
+export const COBRANCA_PATH = '/cobranca/v3/cobrancas';
+
+/** Banco Inter refuses boletos under R$2.50. */
+export const MIN_BOLETO_VALUE = 2.5;
+
+/** v3 situacao values that mean the charge was paid (by boleto or by its PIX). */
+const PAID_SITUACOES = new Set(['RECEBIDO', 'MARCADO_RECEBIDO']);
+export function isCobrancaPaid(situacao: unknown): boolean {
+  return PAID_SITUACOES.has(String(situacao || '').toUpperCase());
+}
+
+/** Flattens GET /cobranca/v3/cobrancas/{codigoSolicitacao} ({ cobranca, boleto, pix }). */
+export function parseCobranca(d: any): {
+  codigoSolicitacao: string | null; situacao: string; bankNossoNumero: string | null;
+  linhaDigitavel: string | null; codigoBarras: string | null; pixCopiaECola: string | null; txid: string | null;
+} {
+  const c = d?.cobranca || {};
+  return {
+    codigoSolicitacao: c.codigoSolicitacao || d?.codigoSolicitacao || null,
+    situacao: String(c.situacao || d?.situacao || '').toUpperCase(),
+    bankNossoNumero: d?.boleto?.nossoNumero || null,
+    linhaDigitavel: d?.boleto?.linhaDigitavel || null,
+    codigoBarras: d?.boleto?.codigoBarras || null,
+    pixCopiaECola: d?.pix?.pixCopiaECola || null,
+    txid: d?.pix?.txid || null,
+  };
+}
+
+/** Error text for a failed Inter response (title/detail/violacoes), never an empty string. */
+export function interError(status: number, data: any): string {
+  if (data && typeof data === 'object') {
+    const v = Array.isArray(data.violacoes)
+      ? data.violacoes.map((x: any) => [x?.propriedade, x?.razao].filter(Boolean).join(': ')).filter(Boolean).join('; ')
+      : '';
+    const msg = [data.title || data.message, data.detail, v].filter(Boolean).join(' - ');
+    if (msg) return `Banco Inter ${status}: ${msg}`;
+    if (typeof data.raw === 'string' && data.raw.trim()) return `Banco Inter ${status}: ${data.raw.trim().substring(0, 200)}`;
+  }
+  return `Banco Inter ${status}`;
+}
+
+/** POST /cobranca/v3/cobrancas body. seuNumero is limited to 15 characters by Inter. */
+export function buildCobrancaBody(p: {
+  customerName: string; customerCpf: string; amount: number; dueDate: string; seuNumero: string;
+  customerEmail?: string; customerCep?: string;
+}): any {
+  const doc = String(p.customerCpf || '').replace(/\D/g, '');
+  const email = String(p.customerEmail || '').trim();
+  return {
+    seuNumero: String(p.seuNumero).substring(0, 15),
+    valorNominal: Math.round(Math.max(Number(p.amount) || 0, MIN_BOLETO_VALUE) * 100) / 100,
+    dataVencimento: p.dueDate,
+    numDiasAgenda: 30,
+    pagador: {
+      cpfCnpj: doc,
+      tipoPessoa: doc.length === 14 ? 'JURIDICA' : 'FISICA',
+      nome: String(p.customerName || '').substring(0, 100),
+      endereco: 'N/A',
+      numero: 'S/N',
+      complemento: '',
+      bairro: 'N/A',
+      cidade: 'Brasilia',
+      uf: 'DF',
+      cep: String(p.customerCep || '70308200').replace(/\D/g, '').padEnd(8, '0').substring(0, 8),
+      ...(email ? { email } : {}),
+      ddd: '61',
+      telefone: '999999999',
+    },
+    mensagem: {
+      linha1: 'Sr(a). CAIXA, após vencimento aceitar somente no Banco Inter.',
+      linha2: 'Em dúvida, envie um e-mail para contato@hipnoterapia.org',
+      linha3: 'Após pagamento, a compensação pode levar até 4 dias úteis.',
+      linha4: '',
+      linha5: '',
+    },
+  };
+}
+
 export class BancoInterGateway {
   private baseUrl: string;
+  private transport: InterTransport;
+  private sleep: (ms: number) => Promise<void>;
 
-  constructor(private config: BancoInterConfig) {
+  constructor(private config: BancoInterConfig, opts: { transport?: InterTransport; sleep?: (ms: number) => Promise<void> } = {}) {
     this.baseUrl = config.sandbox
       ? 'https://cdpj-sandbox.partners.uatinter.co'
       : 'https://cdpj.partners.bancointer.com.br';
+    this.transport = opts.transport || ((u, m, h, b) => this.mtlsCall(u, m, h, b));
+    this.sleep = opts.sleep || ((ms) => new Promise(r => setTimeout(r, ms)));
   }
 
   /** Make an HTTPS request with mTLS certificate */
-  private async mtlsRequest(url: string, method: string, headers: Record<string, string>, body?: string): Promise<any> {
+  private async mtlsCall(url: string, method: string, headers: Record<string, string>, body?: string): Promise<{ status: number; data: any }> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
 
@@ -64,7 +160,7 @@ export class BancoInterGateway {
         port: parsed.port || 443,
         path: parsed.pathname + parsed.search,
         method,
-        headers,
+        headers: body !== undefined ? { ...headers, 'Content-Length': String(Buffer.byteLength(body)) } : headers,
         rejectUnauthorized: true,
         timeout: 15000,
       };
@@ -81,8 +177,9 @@ export class BancoInterGateway {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
-          try { resolve(JSON.parse(data)); }
-          catch { resolve({ raw: data }); }
+          const status = res.statusCode || 0;
+          try { resolve({ status, data: JSON.parse(data) }); }
+          catch { resolve({ status, data: { raw: data } }); }
         });
       });
 
@@ -91,9 +188,26 @@ export class BancoInterGateway {
         reject(new Error(`Request timeout: ${method} ${url}`));
       });
       req.on('error', (e) => reject(e));
-      if (body) req.write(body);
+      if (body !== undefined) req.write(body);
       req.end();
     });
+  }
+
+  /** Parsed body only (token and PIX calls). */
+  private async mtlsRequest(url: string, method: string, headers: Record<string, string>, body?: string): Promise<any> {
+    return (await this.transport(url, method, headers, body)).data;
+  }
+
+  /** Headers for Cobrança calls; x-conta-corrente picks the account when the integration covers more than one. */
+  private cobrancaHeaders(token: string, json = false): Record<string, string> {
+    const h: Record<string, string> = { 'Authorization': `Bearer ${token}` };
+    if (json) h['Content-Type'] = 'application/json';
+    if (this.config.accountNumber) h['x-conta-corrente'] = this.config.accountNumber;
+    return h;
+  }
+
+  private cobrancaUrl(codigoSolicitacao: string, suffix = ''): string {
+    return `${this.baseUrl}${COBRANCA_PATH}/${encodeURIComponent(codigoSolicitacao)}${suffix}`;
   }
 
   private accessTokens: Record<string, string> = {};
@@ -139,6 +253,12 @@ export class BancoInterGateway {
     }
   }
 
+  /**
+   * Issues a boleto with PIX (Cobrança v3). POST returns { codigoSolicitacao }; the barcode and PIX appear once Inter
+   * finishes issuing (usually a few seconds), so the details are polled for up to ~12 s. A charge still being issued
+   * after that is returned as a success without barcode: the PDF route and the polling service work by
+   * codigoSolicitacao and pick it up later.
+   */
   async createBoleto(
     customerName: string,
     customerCpf: string,
@@ -148,136 +268,72 @@ export class BancoInterGateway {
     customerEmail: string = '',
     customerCep: string = '70308200',
   ): Promise<BoletoResult> {
+    const fail = (error: string): BoletoResult => ({
+      success: false, nossoNumero: null, bankNossoNumero: null, linhaDigitavel: null, codigoBarras: null,
+      pdfUrl: null, pixCopiaECola: null, pixTxid: null, error,
+    });
     if (!this.config.certPath || !this.config.keyPath) {
-      return { success: false, nossoNumero: null, linhaDigitavel: null, codigoBarras: null, pdfUrl: null,
-        pixCopiaECola: null, pixTxid: null,
-        error: 'Banco Inter certificate not configured (BANCO_INTER_CERT_PATH + KEY_PATH)' };
+      return fail('Banco Inter certificate not configured (BANCO_INTER_CERT_PATH + KEY_PATH)');
     }
     try {
-      const token = await this.getToken();
+      const token = await this.getToken('boleto-cobranca.read boleto-cobranca.write');
+      const body = buildCobrancaBody({ customerName, customerCpf, amount, dueDate, seuNumero: orderId, customerEmail, customerCep });
 
-      // Match legacy Boleto class structure (cobranca/v2/boletos)
-      const dataEmissao = new Date().toISOString().split('T')[0];
-      const dataLimite = new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0];
+      logger.info(`Creating boleto (cobranca v3): order=${orderId} amount=${body.valorNominal} due=${dueDate}`);
 
-      // Banco Inter minimum boleto value is R$2.50
-      const boletoAmount = Math.max(amount, 2.50);
-
-      const body = {
-        seuNumero: orderId,
-        cnpjCPFBeneficiario: '12344385000193',
-        valorNominal: boletoAmount.toFixed(2),
-        dataEmissao,
-        dataVencimento: dueDate,
-        dataLimite,
-        numDiasAgenda: 30,
-        valorAbatimento: '0',
-        pagador: {
-          cpfCnpj: customerCpf.replace(/\D/g, ''),
-          tipoPessoa: 'FISICA',
-          nome: customerName,
-          endereco: 'N/A',
-          numero: 'S/N',
-          complemento: '',
-          bairro: 'N/A',
-          cidade: 'Brasilia',
-          uf: 'DF',
-          cep: customerCep.replace(/\D/g, '').padEnd(8, '0').substring(0, 8),
-          email: customerEmail,
-          ddd: '61',
-          telefone: '999999999',
-        },
-        mensagem: {
-          linha1: 'Sr(a). CAIXA, após vencimento aceitar somente no Banco Inter.',
-          linha2: 'Em dúvida, envie um e-mail para contato@hipnoterapia.org',
-          linha3: 'Após pagamento, a compensação pode levar até 4 dias úteis.',
-          linha4: '',
-          linha5: '',
-        },
-        desconto1: { codigoDesconto: 'NAOTEMDESCONTO', taxa: 0, valor: 0 },
-        desconto2: { codigoDesconto: 'NAOTEMDESCONTO', taxa: 0, valor: 0 },
-        desconto3: { codigoDesconto: 'NAOTEMDESCONTO', taxa: 0, valor: 0 },
-        multa: { codigoMulta: 'NAOTEMMULTA', taxa: 0, valor: 0 },
-        mora: { codigoMora: 'ISENTO', taxa: 0, valor: 0 },
-      };
-
-      logger.info(`Creating boleto: order=${orderId} amount=${amount} due=${dueDate}`);
-
-      const data = await this.mtlsRequest(
-        `${this.baseUrl}/cobranca/v2/boletos`,
-        'POST',
-        { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        JSON.stringify(body),
+      const { status, data } = await this.transport(
+        `${this.baseUrl}${COBRANCA_PATH}`, 'POST', this.cobrancaHeaders(token, true), JSON.stringify(body),
       );
+      logger.info(`Boleto response ${status}: ${JSON.stringify(data).substring(0, 500)}`);
 
-      logger.info(`Boleto response: ${JSON.stringify(data).substring(0, 500)}`);
+      const codigoSolicitacao: string | null = data?.codigoSolicitacao || null;
+      if (status < 200 || status >= 300 || !codigoSolicitacao) {
+        return fail(interError(status, data));
+      }
 
-      if (data.codigoSolicitacao || data.nossoNumero || data.linhaDigitavel) {
-        const nossoNumero = data.nossoNumero || data.codigoSolicitacao;
-
-        // Banco Inter POST /cobranca/v2/boletos typically returns only codigoSolicitacao.
-        // We need GET /cobranca/v2/boletos/{nossoNumero} to get linhaDigitavel, codigoBarras, and PIX data.
-        let linhaDigitavel = data.linhaDigitavel || null;
-        let codigoBarras = data.codigoBarras || null;
-        let pixCopiaECola = data.pix?.pixCopiaECola || data.pixCopiaECola || null;
-        let pixTxid = data.pix?.txid || data.pixTxid || null;
-
-        if (!linhaDigitavel && nossoNumero) {
-          try {
-            const details = await this.getBoletoDetails(nossoNumero);
-            if (details) {
-              linhaDigitavel = details.linhaDigitavel || linhaDigitavel;
-              codigoBarras = details.codigoBarras || codigoBarras;
-              pixCopiaECola = details.pix?.pixCopiaECola || details.pixCopiaECola || pixCopiaECola;
-              pixTxid = details.pix?.txid || details.pixTxid || pixTxid;
-            }
-          } catch (e) {
-            logger.warn(`Could not fetch boleto details for ${nossoNumero}: ${(e as Error).message}`);
-          }
+      let details = parseCobranca(null);
+      for (let attempt = 0; attempt < 8; attempt++) {
+        if (attempt > 0) await this.sleep(1500);
+        const raw = await this.getBoletoDetails(codigoSolicitacao);
+        if (!raw) continue;
+        details = parseCobranca(raw);
+        if (details.situacao === 'FALHA_EMISSAO') {
+          return fail(`Banco Inter não conseguiu emitir o boleto (codigoSolicitacao ${codigoSolicitacao}).`);
         }
-
-        return {
-          success: true,
-          nossoNumero,
-          linhaDigitavel,
-          codigoBarras,
-          pdfUrl: data.pdfUrl || null,
-          pixCopiaECola,
-          pixTxid,
-          error: null,
-        };
+        if (details.linhaDigitavel) break;
+      }
+      if (!details.linhaDigitavel) {
+        logger.warn(`Boleto ${codigoSolicitacao} still being issued (situacao=${details.situacao || 'unknown'})`);
       }
 
       return {
-        success: false, nossoNumero: null, linhaDigitavel: null,
-        codigoBarras: null, pdfUrl: null, pixCopiaECola: null, pixTxid: null,
-        error: data.message || data.title || JSON.stringify(data),
+        success: true,
+        nossoNumero: codigoSolicitacao,
+        bankNossoNumero: details.bankNossoNumero,
+        linhaDigitavel: details.linhaDigitavel,
+        codigoBarras: details.codigoBarras,
+        pdfUrl: null,
+        pixCopiaECola: details.pixCopiaECola,
+        pixTxid: details.txid,
+        error: null,
       };
     } catch (error) {
       logger.error(`Boleto error: ${(error as Error).message}`);
-      return {
-        success: false, nossoNumero: null, linhaDigitavel: null,
-        codigoBarras: null, pdfUrl: null, pixCopiaECola: null, pixTxid: null,
-        error: (error as Error).message,
-      };
+      return fail((error as Error).message);
     }
   }
 
   /**
    * Fetch full boleto details from Banco Inter API.
-   * GET /cobranca/v2/boletos/{nossoNumero}
-   * Returns linhaDigitavel, codigoBarras, PIX data, situacao, etc.
+   * GET /cobranca/v3/cobrancas/{codigoSolicitacao} → { cobranca: { situacao, ... }, boleto: { nossoNumero,
+   * linhaDigitavel, codigoBarras }, pix: { txid, pixCopiaECola } }. Null when the call fails.
    */
-  async getBoletoDetails(nossoNumero: string): Promise<any | null> {
+  async getBoletoDetails(codigoSolicitacao: string): Promise<any | null> {
     try {
       const token = await this.getToken('boleto-cobranca.read');
-      const data = await this.mtlsRequest(
-        `${this.baseUrl}/cobranca/v2/boletos/${nossoNumero}`,
-        'GET',
-        { 'Authorization': `Bearer ${token}` },
-      );
-      logger.info(`Boleto details for ${nossoNumero}: ${JSON.stringify(data).substring(0, 500)}`);
-      return data;
+      const { status, data } = await this.transport(this.cobrancaUrl(codigoSolicitacao), 'GET', this.cobrancaHeaders(token));
+      logger.info(`Boleto details for ${codigoSolicitacao} (${status}): ${JSON.stringify(data).substring(0, 300)}`);
+      return status >= 200 && status < 300 ? data : null;
     } catch (error) {
       logger.error(`getBoletoDetails error: ${(error as Error).message}`);
       return null;
@@ -285,78 +341,51 @@ export class BancoInterGateway {
   }
 
   /**
-   * Check if a boleto has been paid.
-   * Uses GET /cobranca/v2/boletos/{nossoNumero} and checks the situacao field.
-   * Banco Inter situacao values: EMABERTO, PAGO, CANCELADO, EXPIRADO, VENCIDO
+   * Check if a boleto has been paid (by barcode or by its PIX).
+   * v3 situacao values: A_RECEBER, ATRASADO, RECEBIDO, MARCADO_RECEBIDO, CANCELADO, EXPIRADO, FALHA_EMISSAO,
+   * EM_PROCESSAMENTO, PROTESTO.
    */
-  async checkBoletoStatus(nossoNumero: string): Promise<{ paid: boolean; situacao: string }> {
+  async checkBoletoStatus(codigoSolicitacao: string): Promise<{ paid: boolean; situacao: string }> {
     try {
-      const details = await this.getBoletoDetails(nossoNumero);
+      const details = await this.getBoletoDetails(codigoSolicitacao);
       if (!details) return { paid: false, situacao: 'UNKNOWN' };
-      const situacao = (details.situacao || details.situacaoBoleto || '').toUpperCase();
-      return { paid: situacao === 'PAGO', situacao };
+      const { situacao } = parseCobranca(details);
+      return { paid: isCobrancaPaid(situacao), situacao };
     } catch (error) {
-      logger.error(`checkBoletoStatus error for ${nossoNumero}: ${(error as Error).message}`);
+      logger.error(`checkBoletoStatus error for ${codigoSolicitacao}: ${(error as Error).message}`);
       return { paid: false, situacao: 'ERROR' };
     }
   }
 
   /**
-   * Fetch boleto PDF from Banco Inter API.
-   * GET /cobranca/v2/boletos/{nossoNumero}/pdf
+   * Fetch boleto PDF (base64) from Banco Inter API.
+   * GET /cobranca/v3/cobrancas/{codigoSolicitacao}/pdf → { pdf: "base64" }
    */
-  async getBoletoPdf(nossoNumero: string): Promise<string | null> {
+  async getBoletoPdf(codigoSolicitacao: string): Promise<string | null> {
     try {
       const token = await this.getToken('boleto-cobranca.read');
-      const url = `${this.baseUrl}/cobranca/v2/boletos/${nossoNumero}/pdf`;
-
-      const parsed = new URL(url);
-      return new Promise((resolve) => {
-        const options: https.RequestOptions = {
-          hostname: parsed.hostname,
-          port: parsed.port || 443,
-          path: parsed.pathname,
-          method: 'GET',
-          headers: { 'Authorization': `Bearer ${token}` },
-          rejectUnauthorized: true,
-        };
-        if (this.config.certPath && fs.existsSync(this.config.certPath)) {
-          options.cert = fs.readFileSync(this.config.certPath);
-        }
-        if (this.config.keyPath && fs.existsSync(this.config.keyPath)) {
-          options.key = fs.readFileSync(this.config.keyPath);
-        }
-
-        const req = https.request(options, (res) => {
-          // Banco Inter returns the PDF as base64 in the body, or a redirect URL
-          if (res.statusCode === 200) {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-              try {
-                const json = JSON.parse(data);
-                // API returns { pdf: "base64string" }
-                resolve(json.pdf || null);
-              } catch {
-                // If not JSON, it might be raw base64
-                resolve(data || null);
-              }
-            });
-          } else {
-            logger.warn(`Boleto PDF request returned status ${res.statusCode} for nossoNumero=${nossoNumero}`);
-            res.resume();
-            resolve(null);
-          }
-        });
-        req.on('error', (e) => {
-          logger.error(`Boleto PDF error: ${e.message}`);
-          resolve(null);
-        });
-        req.end();
-      });
+      const { status, data } = await this.transport(this.cobrancaUrl(codigoSolicitacao, '/pdf'), 'GET', this.cobrancaHeaders(token));
+      if (status === 200 && typeof data?.pdf === 'string' && data.pdf) return data.pdf;
+      logger.warn(`Boleto PDF request returned ${status} for ${codigoSolicitacao}: ${JSON.stringify(data).substring(0, 200)}`);
+      return null;
     } catch (error) {
       logger.error(`getBoletoPdf error: ${(error as Error).message}`);
       return null;
+    }
+  }
+
+  /** POST /cobranca/v3/cobrancas/{codigoSolicitacao}/cancelar (Inter answers 202). */
+  async cancelBoleto(codigoSolicitacao: string, motivoCancelamento = 'Cancelado pelo beneficiário'): Promise<{ success: boolean; error?: string }> {
+    try {
+      const token = await this.getToken('boleto-cobranca.read boleto-cobranca.write');
+      const { status, data } = await this.transport(
+        this.cobrancaUrl(codigoSolicitacao, '/cancelar'), 'POST', this.cobrancaHeaders(token, true),
+        JSON.stringify({ motivoCancelamento: motivoCancelamento.substring(0, 50) }),
+      );
+      logger.info(`Cancel boleto ${codigoSolicitacao}: ${status}`);
+      return status >= 200 && status < 300 ? { success: true } : { success: false, error: interError(status, data) };
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
     }
   }
 
@@ -446,25 +475,18 @@ export class BancoInterGateway {
 
   /**
    * Register a webhook URL with Banco Inter for boleto payment notifications.
-   * PUT /cobranca/v2/boletos/webhook
+   * PUT /cobranca/v3/cobrancas/webhook (204 No Content on success). Inter then POSTs an array of
+   * { codigoSolicitacao, seuNumero, situacao, ... }; the callback only uses seuNumero to pick candidate orders.
    */
   async registerBoletoWebhook(webhookUrl: string): Promise<{ success: boolean; error?: string }> {
     try {
       const token = await this.getToken('boleto-cobranca.write');
-      const body = { webhookUrl };
       logger.info(`Registering boleto webhook: ${webhookUrl}`);
-      const data = await this.mtlsRequest(
-        `${this.baseUrl}/cobranca/v2/boletos/webhook`,
-        'PUT',
-        { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        JSON.stringify(body),
+      const { status, data } = await this.transport(
+        `${this.baseUrl}${COBRANCA_PATH}/webhook`, 'PUT', this.cobrancaHeaders(token, true), JSON.stringify({ webhookUrl }),
       );
-      logger.info(`Boleto webhook registration response: ${JSON.stringify(data).substring(0, 500)}`);
-      // 204 No Content = success (data will be empty or { raw: '' })
-      if (!data || data.raw === '' || !data.title) {
-        return { success: true };
-      }
-      return { success: false, error: data.title || data.message || JSON.stringify(data) };
+      logger.info(`Boleto webhook registration response ${status}: ${JSON.stringify(data).substring(0, 300)}`);
+      return status >= 200 && status < 300 ? { success: true } : { success: false, error: interError(status, data) };
     } catch (error) {
       logger.error(`Boleto webhook registration error: ${(error as Error).message}`);
       return { success: false, error: (error as Error).message };

@@ -137,7 +137,7 @@ export class ExternalPaymentController {
 
     try {
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]; // 7 days
-      const orderId = `AMODE-${Date.now()}`;
+      const orderId = `AM${Date.now()}`; // Inter seuNumero: at most 15 characters
 
       const result = await this.bancoInterGateway.createBoleto(
         req.payerName || 'Amode Client',

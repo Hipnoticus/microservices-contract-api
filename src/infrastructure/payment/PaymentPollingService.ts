@@ -102,10 +102,10 @@ export class PaymentPollingService {
               await this.confirmPaymentUseCase.execute(order.ID, `polling:pix:${status.status}`);
             }
           } else {
-            // Check boleto status by nossoNumero
+            // Check boleto status by its Cobrança v3 codigoSolicitacao (stored in Identifier)
             const status = await this.bancoInterGateway!.checkBoletoStatus(identifier);
             if (status.paid) {
-              logger.info(`Order ${order.ID} (nossoNumero=${identifier}) is PAID — confirming`);
+              logger.info(`Order ${order.ID} (codigoSolicitacao=${identifier}) is ${status.situacao} — confirming`);
               await this.confirmPaymentUseCase.execute(order.ID, `polling:${status.situacao}`);
             }
           }
