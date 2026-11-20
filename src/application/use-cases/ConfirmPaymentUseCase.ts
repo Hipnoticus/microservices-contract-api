@@ -14,6 +14,7 @@ import { SendConfirmationEmailUseCase, EmailContext } from './SendConfirmationEm
 import type { SessionReservations } from '../../infrastructure/schedule/ScheduleServiceClient';
 import { Logger } from '../../shared/logger/Logger';
 import { orderSubmissions } from '../order/OrderSubmissions';
+import { paymentEvents } from '../payment/PaymentEvents';
 
 const logger = new Logger('ConfirmPaymentUseCase');
 
@@ -25,7 +26,18 @@ export class ConfirmPaymentUseCase {
     private readonly createSessionsUseCase?: SessionReservations | null,
   ) {}
 
-  async execute(orderId: number, source: string): Promise<boolean> {
+  /** Webhook, polling and the live status check can race on one order: they share one confirmation run. */
+  private inflight = new Map<number, Promise<boolean>>();
+
+  execute(orderId: number, source: string): Promise<boolean> {
+    const running = this.inflight.get(orderId);
+    if (running) return running;
+    const p = this.run(orderId, source).finally(() => this.inflight.delete(orderId));
+    this.inflight.set(orderId, p);
+    return p;
+  }
+
+  private async run(orderId: number, source: string): Promise<boolean> {
     const order = await this.orderRepository.findById(orderId);
     if (!order) {
       logger.warn(`Order ${orderId} not found (source: ${source})`);
@@ -59,6 +71,8 @@ export class ConfirmPaymentUseCase {
       logger.error(`Failed to create sessions for order ${orderId}: ${(e as Error).message}`);
     }
 
+    // Tell the open success page now (sessions exist already); the e-mails below can take seconds
+    paymentEvents.emitPaid(orderId, source);
     // Send payment confirmation emails
     try {
       await this.sendPaymentConfirmedEmails(order);

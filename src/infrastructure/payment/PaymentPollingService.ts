@@ -5,7 +5,7 @@
  * Runs every 5 minutes, checks orders with status "Pending" (1) that have
  * a payment identifier (nossoNumero for boleto).
  */
-import { BancoInterGateway } from './BancoInterGateway';
+import { BancoInterGateway, webhookUrl as interWebhookUrl } from './BancoInterGateway';
 import { ConfirmPaymentUseCase } from '../../application/use-cases/ConfirmPaymentUseCase';
 import { Logger } from '../../shared/logger/Logger';
 
@@ -29,8 +29,10 @@ export class PaymentPollingService {
 
     logger.info(`Payment polling started (interval: ${this.pollIntervalMs / 1000}s)`);
 
-    // Register webhooks on startup (fire-and-forget)
-    this.registerWebhooks();
+    // Register webhooks on startup (fire-and-forget). Dev shares the production Banco Inter account, so dev sets
+    // BANCO_INTER_WEBHOOK_REGISTER=false: Inter keeps one URL per account and a dev URL would replace production's.
+    if (process.env.BANCO_INTER_WEBHOOK_REGISTER !== 'false') this.registerWebhooks();
+    else logger.info('Banco Inter webhook registration skipped (BANCO_INTER_WEBHOOK_REGISTER=false)');
 
     // Run first check after 30 seconds (let the app fully start)
     setTimeout(() => this.checkPendingOrders(), 30000);
@@ -47,8 +49,7 @@ export class PaymentPollingService {
   }
 
   private async registerWebhooks(): Promise<void> {
-    const webhookUrl = process.env.BANCO_INTER_WEBHOOK_URL
-      || 'https://moses.hipnoticus.com.br/contract-service/payments/webhook/banco-inter';
+    const webhookUrl = interWebhookUrl();
 
     try {
       const boletoResult = await this.bancoInterGateway!.registerBoletoWebhook(webhookUrl);

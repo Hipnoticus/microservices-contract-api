@@ -16,6 +16,7 @@ import type { ScheduleRulesPort, SessionReservations } from '../../infrastructur
 import { CustomerCard, sqlNow } from '../../infrastructure/persistence/models/CustomerCardModel';
 import { Logger } from '../../shared/logger/Logger';
 import { chargeAmount } from '../payment/PaymentPolicy';
+import { paymentEvents } from '../payment/PaymentEvents';
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { DAY_NAMES, loadAgenda, slotTaken, validateOrderSchedule, validatePaymentDates } from '../order/ScheduleRules';
 import { orderSubmissions } from '../order/OrderSubmissions';
@@ -316,6 +317,7 @@ export class ProcessPaymentUseCase {
           });
         }
       } catch (e) { logger.warn(`Could not create sessions for order ${req.orderId}: ${(e as Error).message}`); }
+      paymentEvents.emitPaid(req.orderId, 'cielo');
     }
 
     const ccResponse: PaymentResponse = {

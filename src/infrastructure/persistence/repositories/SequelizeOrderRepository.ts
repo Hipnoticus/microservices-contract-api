@@ -95,6 +95,26 @@ export class SequelizeOrderRepository implements IOrderRepository {
     return rows.length > 0;
   }
 
+  async findByPaymentIdentifier(identifier: string): Promise<Order | null> {
+    if (!identifier || identifier.length > 100) return null;
+    const rows = await OrderModel.sequelize!.query<any>(
+      `SELECT TOP 1 ID FROM tbOrders WHERE Identifier = :identifier ORDER BY ID DESC`,
+      { replacements: { identifier }, type: QueryTypes.SELECT },
+    );
+    return rows.length ? this.findById(rows[0].ID) : null;
+  }
+
+  async recentPendingBoletoOrderIds(days: number, limit: number): Promise<number[]> {
+    const rows = await OrderModel.sequelize!.query<any>(
+      `SELECT TOP (:limit) ID FROM tbOrders
+       WHERE OrderStatusID = 1 AND FormaPagamento = 4 AND Identifier IS NOT NULL AND Identifier <> ''
+         AND DateCreated > DATEADD(day, -:days, GETDATE())
+       ORDER BY ID DESC`,
+      { replacements: { days, limit }, type: QueryTypes.SELECT },
+    );
+    return rows.map((r) => Number(r.ID));
+  }
+
   async updatePayment(id: number, identifier: string, registry: string): Promise<Order | null> {
     await OrderModel.sequelize!.query(
       `UPDATE tbOrders SET Identifier = :identifier, Registry = :registry, DateModified = GETDATE() WHERE ID = :id`,

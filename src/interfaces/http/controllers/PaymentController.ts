@@ -1,6 +1,9 @@
-import { Controller, Post, Get, Param, Body, Inject, Res, Req, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Inject, Res, Req, UseGuards, HttpCode } from '@nestjs/common';
 import { MODULE, StaffGuard, principalOf, verifyStaffToken } from '../auth/StaffAuth';
 import { confirmVerifiedOrders } from '../../../application/payment/PaymentPolicy';
+import { PaymentStatusChecker } from '../../../application/payment/PaymentStatus';
+import { paymentEvents } from '../../../application/payment/PaymentEvents';
+import { webhookUrl as interWebhookUrl } from '../../../infrastructure/payment/BancoInterGateway';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import type { ProcessPaymentUseCase, PaymentRequest, PaymentResponse } from '../../../application/use-cases/ProcessPaymentUseCase';
 import type { ConfirmPaymentUseCase } from '../../../application/use-cases/ConfirmPaymentUseCase';
@@ -12,6 +15,12 @@ import { paymentRateLimiter } from '../RateLimiter';
 
 const logger = new Logger('PaymentController');
 
+const STREAM_RECHECK_MS = 5_000;
+const STREAM_PING_MS = 15_000;
+const STREAM_MAX_MS = 30 * 60_000;
+const MAX_STREAMS = 500;
+const MAX_STREAMS_PER_IP = 10;
+
 @ApiTags('Payments')
 @Controller('payments')
 export class PaymentController {
@@ -20,7 +29,17 @@ export class PaymentController {
     @Inject('CONFIRM_PAYMENT') private readonly confirmPayment: ConfirmPaymentUseCase,
     @Inject('BANCO_INTER_GATEWAY') private readonly bancoInterGateway: BancoInterGateway | null,
     @Inject('ORDER_REPOSITORY') private readonly orderRepository: IOrderRepository,
-  ) {}
+  ) {
+    const inter = this.bancoInterGateway;
+    this.statusChecker = new PaymentStatusChecker({
+      findOrder: (id) => this.orderRepository.findById(id),
+      checkPix: inter ? (txid) => inter.checkPixStatus(txid) : null,
+      checkBoleto: inter ? (codigo) => inter.checkBoletoStatus(codigo) : null,
+      confirm: (id, source) => this.confirmPayment.execute(id, source),
+    });
+  }
+
+  private readonly statusChecker: PaymentStatusChecker;
 
   @Post('process')
   @ApiOperation({ summary: 'Process payment for an existing order' })
@@ -38,36 +57,86 @@ export class PaymentController {
   }
 
   @Get('status/:orderId')
-  @ApiOperation({ summary: 'Check payment status for an order (used by frontend polling)' })
+  @ApiOperation({ summary: 'Payment status of an order (paid / pending / not_found), polled by the Moses success page' })
   async getPaymentStatus(@Param('orderId') orderId: string) {
-    const id = parseInt(orderId, 10);
-    const order = await this.orderRepository.findById(id);
-    if (!order) return { orderId: id, status: 'not_found' };
-
-    // Already paid — return immediately
-    if (order.statusId >= 2) {
-      return { orderId: id, status: 'paid', statusId: order.statusId, paid: true };
-    }
-
-    // For pending PIX orders, check Banco Inter in real-time (throttled to once per 10s per order)
-    if (this.bancoInterGateway && order.paymentIdentifier && order.paymentMethodId === 2) {
-      const cacheKey = `pix-check-${id}`;
-      const now = Date.now();
-      if (!this.pixCheckCache[cacheKey] || now - this.pixCheckCache[cacheKey] > 10000) {
-        this.pixCheckCache[cacheKey] = now;
-        try {
-          const status = await this.bancoInterGateway.checkPixStatus(order.paymentIdentifier!);
-          if (status.paid) {
-            await this.confirmPayment.execute(id, `realtime:pix:${status.status}`);
-            return { orderId: id, status: 'paid', statusId: 2, paid: true };
-          }
-        } catch (e) { /* non-blocking */ }
-      }
-    }
-
-    return { orderId: id, status: 'pending', statusId: order.statusId, paid: false };
+    // Pending Banco Inter orders (PIX and boleto with PIX) are checked live with Inter at most every 10 s per order.
+    return this.statusChecker.status(parseInt(orderId, 10));
   }
-  private pixCheckCache: Record<string, number> = {};
+
+  /**
+   * Server-Sent Events for the Moses success page: `event: status` with the same body as GET /payments/status the
+   * moment the order is confirmed (webhook, polling, live check, staff or card), then the stream ends. Public like
+   * /payments/status and with the same data (paid / pending only). While open it re-checks the order every 5 s
+   * (the live Inter check stays throttled to 10 s per order) and sends a comment every 15 s so nginx, Cloudflare and
+   * the gateway keep the connection. Closed after 30 minutes; the page keeps polling as a fallback.
+   */
+  @Get('stream/:orderId')
+  @ApiOperation({ summary: 'Server-Sent Events: pushes the payment confirmation of an order' })
+  async streamPaymentStatus(@Param('orderId') orderId: string, @Req() req: any, @Res() res: any): Promise<void> {
+    const id = parseInt(orderId, 10);
+    const ip = clientIp(req);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Pedido inválido.' });
+      return;
+    }
+    if (PaymentController.openStreams >= MAX_STREAMS || (PaymentController.streamsByIp.get(ip) || 0) >= MAX_STREAMS_PER_IP) {
+      res.status(429).json({ error: 'Muitas conexões abertas.' });
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // host nginx: do not buffer this response
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    PaymentController.openStreams++;
+    PaymentController.streamsByIp.set(ip, (PaymentController.streamsByIp.get(ip) || 0) + 1);
+    let closed = false;
+    const timers: any[] = [];
+    let unsubscribe: () => void = () => {};
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      for (const t of timers) clearInterval(t);
+      unsubscribe();
+      PaymentController.openStreams--;
+      const n = (PaymentController.streamsByIp.get(ip) || 1) - 1;
+      if (n > 0) PaymentController.streamsByIp.set(ip, n); else PaymentController.streamsByIp.delete(ip);
+      try { res.end(); } catch { /* already gone */ }
+    };
+    const send = (body: unknown) => {
+      if (closed) return;
+      try { res.write(`event: status\ndata: ${JSON.stringify(body)}\n\n`); } catch { close(); }
+    };
+    let lastSent = '';
+    const finishIfDone = (s: { status: string }) => {
+      if (s.status === lastSent) return;
+      lastSent = s.status;
+      send(s);
+      if (s.status !== 'pending') close();
+    };
+    req.on('close', close);
+    res.on?.('close', close);
+
+    try { res.write('retry: 3000\n\n'); } catch { close(); return; }
+    unsubscribe = paymentEvents.onPaid(id, () => finishIfDone({ orderId: id, status: 'paid', statusId: 2, paid: true } as any));
+    let checking = false;
+    const check = async () => {
+      if (closed || checking) return;
+      checking = true;
+      try { finishIfDone(await this.statusChecker.status(id)); } catch { /* next tick */ } finally { checking = false; }
+    };
+    timers.push(setInterval(check, STREAM_RECHECK_MS));
+    timers.push(setInterval(() => { if (!closed) { try { res.write(': ping\n\n'); } catch { close(); } } }, STREAM_PING_MS));
+    timers.push(setInterval(close, STREAM_MAX_MS));
+    await check();
+  }
+
+  /** Open SSE streams (process-wide), to cap what a public endpoint can hold open. */
+  private static openStreams = 0;
+  private static streamsByIp = new Map<string, number>();
 
   @Post('confirm/:orderId')
   @UseGuards(StaffGuard(MODULE.CLIENTES))
@@ -79,33 +148,47 @@ export class PaymentController {
   }
 
   /**
-   * Banco Inter webhook callback for boleto and PIX payments.
-   * Banco Inter sends POST to this endpoint when a payment is received.
-   * The webhook URL must be registered in the Banco Inter portal.
+   * Banco Inter callback: Cobrança v3 (array of { codigoSolicitacao, seuNumero, situacao, txid, ... }) at the
+   * registered URL and PIX ({ pix: [{ txid, endToEndId, valor, horario }] }) at {registered URL}/pix, as the BCB
+   * API Pix appends. A bolepix paid by PIX fires the Cobrança v3 callback with situacao RECEBIDO.
    */
   @Post('webhook/banco-inter')
+  @HttpCode(200)
   @ApiOperation({ summary: 'Banco Inter webhook callback for payment notifications' })
   async bancoInterWebhook(@Body() body: any) {
-    logger.info(`Banco Inter webhook received: ${JSON.stringify(body ?? null).substring(0, 500)}`);
+    return this.handleInterCallback('cobranca', body);
+  }
 
-    // Public URL, so the payload is never believed: it only names candidate orders (boleto seuNumero, PIX txid),
-    // and each one is confirmed only if Banco Inter reports that order's own charge as paid.
+  @Post('webhook/banco-inter/pix')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Banco Inter PIX webhook callback ({webhookUrl}/pix)' })
+  async bancoInterPixWebhook(@Body() body: any) {
+    return this.handleInterCallback('pix', body);
+  }
+
+  private async handleInterCallback(kind: string, body: any) {
+    logger.info(`Banco Inter ${kind} webhook received: ${JSON.stringify(body ?? null).substring(0, 500)}`);
+
+    // Public URL, so the payload is never believed: it only names candidate orders (codigoSolicitacao, seuNumero,
+    // PIX txid), and each one is confirmed only if Banco Inter reports that order's own charge as paid.
     const gateway = this.bancoInterGateway;
     if (gateway) {
       try {
         const confirmed = await confirmVerifiedOrders(body, {
           findOrder: (id) => this.orderRepository.findById(id),
+          findOrderByIdentifier: (ident) => this.orderRepository.findByPaymentIdentifier(ident),
+          recentPendingBoletoOrderIds: () => this.orderRepository.recentPendingBoletoOrderIds(7, 30),
           checkPix: (txid) => gateway.checkPixStatus(txid),
-          checkBoleto: (nossoNumero) => gateway.checkBoletoStatus(nossoNumero),
+          checkBoleto: (codigo) => gateway.checkBoletoStatus(codigo),
           confirm: (id, source) => this.confirmPayment.execute(id, source),
         });
-        logger.info(`Banco Inter webhook: confirmed orders [${confirmed.join(',')}] after checking with Banco Inter`);
+        logger.info(`Banco Inter ${kind} webhook: confirmed orders [${confirmed.join(',')}] after checking with Banco Inter`);
       } catch (e) {
         logger.error(`Webhook processing error: ${(e as Error).message}`);
       }
     }
 
-    // Always return 200 to acknowledge the webhook
+    // Always acknowledge, or Inter retries
     return { received: true };
   }
 
@@ -116,14 +199,12 @@ export class PaymentController {
     if (!this.bancoInterGateway) {
       return { success: false, error: 'Banco Inter gateway not configured' };
     }
-    const webhookUrl = process.env.BANCO_INTER_WEBHOOK_URL
-      || 'https://moses.hipnoticus.com.br/contract-service/payments/webhook/banco-inter';
-
-    const boletoResult = await this.bancoInterGateway.registerBoletoWebhook(webhookUrl);
-    const pixResult = await this.bancoInterGateway.registerPixWebhook(webhookUrl);
+    const url = interWebhookUrl();
+    const boletoResult = await this.bancoInterGateway.registerBoletoWebhook(url);
+    const pixResult = await this.bancoInterGateway.registerPixWebhook(url);
 
     return {
-      webhookUrl,
+      webhookUrl: url,
       boleto: boletoResult,
       pix: pixResult,
     };

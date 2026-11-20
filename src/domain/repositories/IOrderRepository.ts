@@ -10,4 +10,8 @@ export interface IOrderRepository {
   updatePayment(id: number, identifier: string, registry: string): Promise<Order | null>;
   /** True when one of the customer's orders carries this payment identifier (boleto nossoNumero, PIX txid). */
   ownsPaymentIdentifier(customerId: number, identifier: string): Promise<boolean>;
+  /** Order whose tbOrders.Identifier is this payment identifier (Cobranca v3 codigoSolicitacao, PIX txid). */
+  findByPaymentIdentifier(identifier: string): Promise<Order | null>;
+  /** Pending Banco Inter boleto orders (FormaPagamento 4) of the last `days` days, newest first. */
+  recentPendingBoletoOrderIds(days: number, limit: number): Promise<number[]>;
 }

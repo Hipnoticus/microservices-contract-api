@@ -61,6 +61,15 @@ export type InterTransport = (url: string, method: string, headers: Record<strin
 
 export const COBRANCA_PATH = '/cobranca/v3/cobrancas';
 
+/**
+ * Public URL Banco Inter calls back (Cobrança v3 and PIX). It must be the API host: moses.hipnoticus.com.br only
+ * serves the Angular app and answered every callback with 405 (2026-11-20), so payments were confirmed only by polling.
+ */
+export const DEFAULT_WEBHOOK_URL = 'https://api.hipnoticus.com.br/contract-service/payments/webhook/banco-inter';
+export function webhookUrl(): string {
+  return process.env.BANCO_INTER_WEBHOOK_URL || DEFAULT_WEBHOOK_URL;
+}
+
 /** Banco Inter refuses boletos under R$2.50. */
 export const MIN_BOLETO_VALUE = 2.5;
 
@@ -499,21 +508,19 @@ export class BancoInterGateway {
    */
   async registerPixWebhook(webhookUrl: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const token = await this.getToken();
+      // The webhook scope is not in the default payment scope: without it Inter refused the PUT and the PIX webhook
+      // was never registered (found 2026-11-20). Inter posts PIX callbacks to {webhookUrl}/pix (BCB API Pix).
+      const token = await this.getToken('webhook.read webhook.write');
       const chave = this.config.pixKey || this.config.accountNumber;
-      const body = { webhookUrl };
       logger.info(`Registering PIX webhook for chave=${chave}: ${webhookUrl}`);
-      const data = await this.mtlsRequest(
-        `${this.baseUrl}/pix/v2/webhook/${chave}`,
+      const { status, data } = await this.transport(
+        `${this.baseUrl}/pix/v2/webhook/${encodeURIComponent(chave)}`,
         'PUT',
         { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        JSON.stringify(body),
+        JSON.stringify({ webhookUrl }),
       );
-      logger.info(`PIX webhook registration response: ${JSON.stringify(data).substring(0, 500)}`);
-      if (!data || data.raw === '' || !data.title) {
-        return { success: true };
-      }
-      return { success: false, error: data.title || data.message || JSON.stringify(data) };
+      logger.info(`PIX webhook registration response ${status}: ${JSON.stringify(data).substring(0, 300)}`);
+      return status >= 200 && status < 300 ? { success: true } : { success: false, error: interError(status, data) };
     } catch (error) {
       logger.error(`PIX webhook registration error: ${(error as Error).message}`);
       return { success: false, error: (error as Error).message };
