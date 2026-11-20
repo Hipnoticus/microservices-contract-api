@@ -508,8 +508,8 @@ export class BancoInterGateway {
    */
   async registerPixWebhook(webhookUrl: string): Promise<{ success: boolean; error?: string }> {
     try {
-      // The webhook scope is not in the default payment scope: without it Inter refused the PUT and the PIX webhook
-      // was never registered (found 2026-11-20). Inter posts PIX callbacks to {webhookUrl}/pix (BCB API Pix).
+      // Explicit webhook scope: the code's default BANCO_INTER_SCOPE has none (production's env does). Inter posts
+      // PIX callbacks to {webhookUrl}/pix (BCB API Pix), handled by POST /payments/webhook/banco-inter/pix.
       const token = await this.getToken('webhook.read webhook.write');
       const chave = this.config.pixKey || this.config.accountNumber;
       logger.info(`Registering PIX webhook for chave=${chave}: ${webhookUrl}`);
