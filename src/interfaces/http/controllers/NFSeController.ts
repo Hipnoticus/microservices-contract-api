@@ -1,16 +1,28 @@
-import { Controller, Get, Post, Put, Param, Body, Query, Inject } from '@nestjs/common';
+import { Controller, Get, Post, Put, Param, Body, Query, Inject, Req, Res } from '@nestjs/common';
 import { Sequelize, QueryTypes } from 'sequelize';
 import { Logger } from '../../../shared/logger/Logger';
+import { NfeServiceClient, nfeServiceEnabled, queryOf } from '../../../infrastructure/nfse/NfeServiceClient';
 
 const logger = new Logger('NFSeController');
 
 @Controller('nfse')
 export class NFSeController {
+  /** NFE_SERVICE_ENABLED=true: every action is answered by NFeAPI (SRP phase 3); the code below is the old path. */
+  private readonly nfe: NfeServiceClient | null = nfeServiceEnabled() ? new NfeServiceClient() : null;
+
   constructor(@Inject('DATABASE') private readonly db: Sequelize) {}
+
+  /** Same status code and body as NFeAPI's /internal/nfse/** answer. */
+  private async remote(req: any, res: any, method: string, sub: string, body?: unknown) {
+    const reply = await this.nfe!.forward(method, `/internal/nfse${sub}${queryOf(req)}`, body);
+    res.status(reply.status);
+    return reply.body;
+  }
 
   /** List all NFS-e with filters */
   @Get()
-  async list(@Query('customerId') customerId?: string, @Query('status') status?: string, @Query('orderId') orderId?: string) {
+  async list(@Req() req: any, @Res({ passthrough: true }) res: any, @Query('customerId') customerId?: string, @Query('status') status?: string, @Query('orderId') orderId?: string) {
+    if (this.nfe) return this.remote(req, res, 'GET', '');
     let where = 'WHERE n.Blocked = 0';
     const replacements: any = {};
     if (customerId) { where += ' AND n.CustomerID = :customerId'; replacements.customerId = parseInt(customerId, 10); }
@@ -30,7 +42,8 @@ export class NFSeController {
 
   /** Get single NFS-e by ID */
   @Get(':id')
-  async getById(@Param('id') id: string) {
+  async getById(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('id') id: string) {
+    if (this.nfe) return this.remote(req, res, 'GET', `/${encodeURIComponent(id)}`);
     const [nfse] = await this.db.query(`
       SELECT n.*, c.FirstName + ' ' + c.LastName as CustomerName, c.Email as CustomerEmail
       FROM tbNFSe n
@@ -43,13 +56,14 @@ export class NFSeController {
 
   /** Create a draft NFS-e */
   @Post()
-  async create(@Body() body: {
+  async create(@Req() req: any, @Res({ passthrough: true }) res: any, @Body() body: {
     orderId?: number;
     sessionId?: number;
     customerId: number;
     value: number;
     serviceDescription?: string;
   }) {
+    if (this.nfe) return this.remote(req, res, 'POST', '', body);
     // Get customer data
     const [customer] = await this.db.query(
       'SELECT ID, FirstName, LastName, CPFCNPJ, Email FROM tbCustomers WHERE ID = :id',
@@ -98,7 +112,8 @@ export class NFSeController {
 
   /** Update NFS-e */
   @Put(':id')
-  async update(@Param('id') id: string, @Body() body: any) {
+  async update(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('id') id: string, @Body() body: any) {
+    if (this.nfe) return this.remote(req, res, 'PUT', `/${encodeURIComponent(id)}`, body);
     const fields: string[] = [];
     const replacements: any = { id: parseInt(id, 10) };
 
@@ -118,7 +133,8 @@ export class NFSeController {
 
   /** Issue (emit) NFS-e — sends to SEFAZ via NFS-e Nacional API */
   @Post(':id/issue')
-  async issue(@Param('id') id: string) {
+  async issue(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('id') id: string) {
+    if (this.nfe) return this.remote(req, res, 'POST', `/${encodeURIComponent(id)}/issue`, {});
     const [nfse] = await this.db.query('SELECT * FROM tbNFSe WHERE ID = :id', { replacements: { id: parseInt(id, 10) }, type: QueryTypes.SELECT }) as any[];
     if (!nfse) return { success: false, error: 'NFS-e não encontrada' };
     if (nfse.Status !== 1) return { success: false, error: 'NFS-e não está em rascunho' };
@@ -218,7 +234,8 @@ export class NFSeController {
 
   /** Cancel NFS-e */
   @Post(':id/cancel')
-  async cancel(@Param('id') id: string, @Body() body: { reason?: string }) {
+  async cancel(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('id') id: string, @Body() body: { reason?: string }) {
+    if (this.nfe) return this.remote(req, res, 'POST', `/${encodeURIComponent(id)}/cancel`, body);
     const [nfse] = await this.db.query('SELECT * FROM tbNFSe WHERE ID = :id', { replacements: { id: parseInt(id, 10) }, type: QueryTypes.SELECT }) as any[];
     if (!nfse) return { success: false, error: 'NFS-e não encontrada' };
     if (nfse.Status !== 2) return { success: false, error: 'Apenas NFS-e emitidas podem ser canceladas' };
@@ -238,14 +255,16 @@ export class NFSeController {
 
   /** Get NFS-e configuration */
   @Get('config/all')
-  async getConfig() {
+  async getConfig(@Req() req: any, @Res({ passthrough: true }) res: any) {
+    if (this.nfe) return this.remote(req, res, 'GET', '/config/all');
     const configs = await this.db.query('SELECT * FROM tbNFSeConfig ORDER BY ID', { type: QueryTypes.SELECT });
     return configs;
   }
 
   /** Update NFS-e configuration */
   @Put('config/:key')
-  async updateConfig(@Param('key') key: string, @Body() body: { value: string }) {
+  async updateConfig(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('key') key: string, @Body() body: { value: string }) {
+    if (this.nfe) return this.remote(req, res, 'PUT', `/config/${encodeURIComponent(key)}`, body);
     await this.db.query(
       'UPDATE tbNFSeConfig SET ConfigValue = :value, DateModified = GETDATE() WHERE ConfigKey = :key',
       { replacements: { key, value: body.value }, type: QueryTypes.UPDATE }

@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { NfeServiceClient, nfeServiceEnabled } from '../../../infrastructure/nfse/NfeServiceClient';
 import { ApiTags } from '@nestjs/swagger';
 import { MODULE, StaffGuard, requireModule, staffOf } from '../auth/StaffAuth';
 import { QuestionnaireAdminService } from '../../../application/admin/QuestionnaireAdminService';
@@ -194,8 +195,16 @@ export class AdminContentController {
   }
 
   // ---- NFS-e
-  @Delete('nfse/:id') deleteNfse(@Req() req: any, @Param('id') rawId: string) {
-    requireModule(staffOf(req), MODULE.NFSE); return this.svc.deleteNfseDraft(id(rawId), staffOf(req).id);
+  // NFE_SERVICE_ENABLED=true: answered by NFeAPI (SRP phase 3) after the same staff and id checks
+  private readonly nfe: NfeServiceClient | null = nfeServiceEnabled() ? new NfeServiceClient() : null;
+  @Delete('nfse/:id') async deleteNfse(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('id') rawId: string) {
+    requireModule(staffOf(req), MODULE.NFSE);
+    if (this.nfe) {
+      const reply = await this.nfe.forward('DELETE', `/internal/admin/nfse/${id(rawId)}?staffId=${staffOf(req).id}`);
+      res.status(reply.status);
+      return reply.body;
+    }
+    return this.svc.deleteNfseDraft(id(rawId), staffOf(req).id);
   }
 }
 
