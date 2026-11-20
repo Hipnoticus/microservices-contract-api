@@ -6,6 +6,7 @@
 import { SyncGoogleCalendarUseCase } from '../../application/use-cases/SyncGoogleCalendarUseCase';
 import { IGoogleCalendarRepository } from '../persistence/repositories/GoogleCalendarRepository';
 import { Logger } from '../../shared/logger/Logger';
+import { sessionJobsRunHere } from '../../shared/sessionJobsOwner';
 
 const logger = new Logger('GoogleCalendarSyncJob');
 
@@ -20,6 +21,10 @@ export class GoogleCalendarSyncJob {
   ) {}
 
   start(): void {
+    if (!sessionJobsRunHere()) {
+      logger.info('Google Calendar agenda sync off here: SessionAPI runs it (SESSION_JOBS_OWNER != contract-api)');
+      return;
+    }
     if (!this.useCase) {
       logger.warn('Google Calendar OAuth client not configured (GCAL_OAUTH_CLIENT_ID/SECRET, GCAL_TOKEN_ENC_KEY) — agenda sync disabled');
       return;

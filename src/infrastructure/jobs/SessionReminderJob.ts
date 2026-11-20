@@ -1,6 +1,7 @@
 import { QueryTypes, Sequelize } from 'sequelize';
 import { SessionEmailService } from '../../application/admin/SessionEmailService';
 import { Logger } from '../../shared/logger/Logger';
+import { sessionJobsRunHere } from '../../shared/sessionJobsOwner';
 
 const logger = new Logger('SessionReminderJob');
 
@@ -25,6 +26,10 @@ export class SessionReminderJob {
   ) {}
 
   start(): void {
+    if (!sessionJobsRunHere()) {
+      logger.info('Session reminder job off here: SessionAPI runs it (SESSION_JOBS_OWNER != contract-api)');
+      return;
+    }
     if ((process.env.SESSION_REMINDER_JOB || '').toLowerCase() !== 'on') {
       logger.info('Session reminder job off (SESSION_REMINDER_JOB != on; cron.asp may still be doing it)');
       return;

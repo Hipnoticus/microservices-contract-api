@@ -91,7 +91,8 @@ const logger = new Logger('AppModule');
       inject: ['DATABASE'],
     },
     {
-      // cron.asp replacement; off unless SESSION_REMINDER_JOB=on
+      // cron.asp replacement; off unless SESSION_REMINDER_JOB=on. Moved to SessionAPI (SRP phase 3): runs here only with
+      // SESSION_JOBS_OWNER=contract-api (rollback). Delete together with SessionEmailService once SessionAPI is settled.
       provide: 'SESSION_REMINDER_JOB',
       useFactory: (db: Sequelize, email: SessionEmailService) => {
         const job = new SessionReminderJob(db, email);
@@ -222,6 +223,8 @@ const logger = new Logger('AppModule');
     },
     {
       // One-way agenda -> Google Calendar sync. Without credentials the endpoints answer 503 and the job stays off.
+      // Moved to SessionAPI (SRP phase 3): the gateway sends /google-calendar and /admin/google-calendar there and the job runs
+      // here only with SESSION_JOBS_OWNER=contract-api (rollback).
       provide: 'GCAL_CONTEXT',
       useFactory: (db: Sequelize): GoogleCalendarContext => {
         const repo = new GoogleCalendarRepository(db);
