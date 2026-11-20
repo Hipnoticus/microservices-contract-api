@@ -30,11 +30,20 @@ export interface ChargeInput {
   testValueBoleto: number;
 }
 
+/** Smallest test charge Banco Inter accepts for boleto/PIX. */
+export const MIN_TEST_VALUE_INTER = 2.5;
+/** Smallest test charge used for Cielo card payments. */
+export const MIN_TEST_VALUE_CARD = 1.0;
+
 /** Amount to charge: the stored order total, or the test value when (and only when) testing is allowed. */
 export function chargeAmount(i: ChargeInput): { amount: number; test: boolean } {
   if (i.testAllowed && (i.testRequested || i.emailMatchesTestEmail)) {
     const boletoPix = ['inter-boleto', 'pix'].includes(i.method);
-    return { amount: boletoPix ? i.testValueBoleto : i.testValue, test: true };
+    // Owner's floors: Banco Inter (boleto/PIX) does not issue below R$ 2,50; Cielo accepts R$ 1,00.
+    const amount = boletoPix
+      ? Math.max(i.testValueBoleto || 0, MIN_TEST_VALUE_INTER)
+      : Math.max(i.testValue || 0, MIN_TEST_VALUE_CARD);
+    return { amount, test: true };
   }
   return { amount: i.orderTotal, test: false };
 }

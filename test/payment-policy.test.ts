@@ -26,9 +26,10 @@ describe('chargeAmount', () => {
     expect(chargeAmount({ ...base, testRequested: true })).toEqual({ amount: 19990, test: false });
     expect(chargeAmount({ ...base, emailMatchesTestEmail: true })).toEqual({ amount: 19990, test: false });
   });
-  test('staff or TestUser customers keep the legacy test values', () => {
-    expect(chargeAmount({ ...base, testAllowed: true, testRequested: true })).toEqual({ amount: 1, test: true });
-    expect(chargeAmount({ ...base, method: 'cc-cielo', testAllowed: true, emailMatchesTestEmail: true })).toEqual({ amount: 0.01, test: true });
+  test('staff or TestUser customers pay the test value, never below R$ 2,50 at Banco Inter or R$ 1,00 at Cielo', () => {
+    expect(chargeAmount({ ...base, testAllowed: true, testRequested: true })).toEqual({ amount: 2.5, test: true });
+    expect(chargeAmount({ ...base, method: 'cc-cielo', testAllowed: true, emailMatchesTestEmail: true })).toEqual({ amount: 1, test: true });
+    expect(chargeAmount({ ...base, testValueBoleto: 3, testAllowed: true, testRequested: true })).toEqual({ amount: 3, test: true });
     expect(chargeAmount({ ...base, testAllowed: true })).toEqual({ amount: 19990, test: false });
   });
 });
