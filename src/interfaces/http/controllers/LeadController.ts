@@ -6,6 +6,7 @@ import { validateLead, type Lead } from '../../../application/order/SignupValida
 import { clientIp } from '../ClientIp';
 import { leadRateLimiter } from '../RateLimiter';
 import { verifyStaffToken } from '../auth/StaffAuth';
+import { requireTurnstile, TURNSTILE_BODY_FIELD } from '../Turnstile';
 
 const logger = new Logger('LeadController');
 
@@ -18,6 +19,11 @@ const logger = new Logger('LeadController');
  * is validated (full name, a permanent e-mail, valid phone/CPF when sent). The Interspire API credentials come from
  * the environment: INTERSPIRE_USERNAME, INTERSPIRE_TOKEN (zeus .env.prod; dev: untracked secrets/interspire.env).
  * Without a token the lead is still stored in tbLeads and Interspire is skipped.
+ *
+ * Cloudflare Turnstile (same verifier as POST /orders): Moses renders its own widget on the lead form, because a
+ * token works once and cannot be shared with the Pagamento step, and sends it as body.turnstileToken. It is checked
+ * with the client IP and fails closed in production; it is stripped before the lead is stored or sent to Interspire.
+ * A verified staff token skips the rate limit and Turnstile; a customer token does not.
  *
  * Custom field IDs (from ListCILog.txt):
  *   26 = Nome Completo
@@ -42,8 +48,15 @@ export class LeadController {
   @Post('register')
   @ApiOperation({ summary: 'Register a lead (unlogged visitor) to Interspire Email Marketer (public, validated, rate limited per IP)' })
   async registerLead(@Body() body: any, @Req() req: any) {
-    if (!verifyStaffToken(req?.headers?.authorization)) leadRateLimiter.check(clientIp(req), 'cadastro');
-    const v = validateLead(body);
+    // The Turnstile token is not lead data: keep it out of tbLeads and Interspire.
+    const { [TURNSTILE_BODY_FIELD]: turnstileToken, ...lead } = (body && typeof body === 'object' ? body : {}) as any;
+    if (!verifyStaffToken(req?.headers?.authorization)) {
+      const ip = clientIp(req);
+      leadRateLimiter.check(ip, 'cadastro');
+      // Before validation, so an unverified caller learns nothing about what the validator accepts.
+      await requireTurnstile(turnstileToken, ip, 'POST /leads/register');
+    }
+    const v = validateLead(lead);
     if (!v.ok) throw new HttpException({ success: false, error: v.error }, HttpStatus.BAD_REQUEST);
     const { name, email, phone, cpf, packageName } = v.lead;
 

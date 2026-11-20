@@ -4,8 +4,8 @@ import { Logger } from '../../shared/logger/Logger';
 /**
  * Cloudflare Turnstile on the public sign-up/order (incident 20261118: a curl bot created orders through the API).
  *
- * Moses renders the widget "Moses" (managed, moses.hipnoticus.com.br) on the Pagamento step and sends its token in
- * the request body as `turnstileToken`. The token is checked here with siteverify, which also makes it single use.
+ * Moses renders the widget "Moses" (managed, moses.hipnoticus.com.br) on the Pagamento step (POST /orders) and, as a
+ * separate instance, on the lead form (POST /leads/register), and sends its token in the request body as `turnstileToken`. The token is checked here with siteverify, which also makes it single use.
  * Staff callers (a verified UserAPI token) are not checked; the controller decides that.
  *
  * TURNSTILE_SECRET holds the widget secret (zeus .env.prod). Dev uses Cloudflare's always-pass test secret.
