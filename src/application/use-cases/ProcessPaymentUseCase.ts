@@ -154,7 +154,8 @@ export class ProcessPaymentUseCase {
     await this.assertScheduleAvailable(order, req);
 
     let effectiveAmount = orderTotal;
-    const testAllowed = req.staffCaller === true || await this.isTestCustomer(order.customerId);
+    const testUser = await this.isTestCustomer(order.customerId);
+    const testAllowed = req.staffCaller === true || testUser;
     if (testAllowed) {
       try {
         const testConfig = await this.loadTestConfig();
@@ -164,6 +165,7 @@ export class ProcessPaymentUseCase {
           testRequested: req.testMode === true,
           emailMatchesTestEmail: !!testConfig.testEmail && req.customerEmail === testConfig.testEmail,
           testAllowed,
+          testUser,
           testValue: testConfig.testValue,
           testValueBoleto: testConfig.testValueBoleto,
         });

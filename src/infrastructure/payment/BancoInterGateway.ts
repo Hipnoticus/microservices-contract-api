@@ -404,7 +404,7 @@ export class BancoInterGateway {
       const token = await this.getToken();
 
       const body = {
-        calendario: { expiracao: 3600 },
+        calendario: { expiracao: 86400 }, // 24 h: an expired charge shows as an invalid QR Code in the bank app
         valor: { original: amount.toFixed(2) },
         chave: this.config.pixKey || this.config.accountNumber,
         solicitacaoPagador: description,

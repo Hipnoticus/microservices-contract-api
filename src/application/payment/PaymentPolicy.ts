@@ -26,6 +26,8 @@ export interface ChargeInput {
   emailMatchesTestEmail: boolean;
   /** verified staff token on the request, or the order's customer has TestUser = 1 */
   testAllowed: boolean;
+  /** the order's customer has tbCustomers.TestUser = 1: always charged the test value (owner's own test account) */
+  testUser?: boolean;
   testValue: number;
   testValueBoleto: number;
 }
@@ -37,7 +39,7 @@ export const MIN_TEST_VALUE_CARD = 1.0;
 
 /** Amount to charge: the stored order total, or the test value when (and only when) testing is allowed. */
 export function chargeAmount(i: ChargeInput): { amount: number; test: boolean } {
-  if (i.testAllowed && (i.testRequested || i.emailMatchesTestEmail)) {
+  if (i.testAllowed && (i.testRequested || i.emailMatchesTestEmail || i.testUser === true)) {
     const boletoPix = ['inter-boleto', 'pix'].includes(i.method);
     // Owner's floors: Banco Inter (boleto/PIX) does not issue below R$ 2,50; Cielo accepts R$ 1,00.
     const amount = boletoPix

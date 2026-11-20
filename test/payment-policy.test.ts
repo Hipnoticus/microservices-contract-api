@@ -30,6 +30,8 @@ describe('chargeAmount', () => {
     expect(chargeAmount({ ...base, testAllowed: true, testRequested: true })).toEqual({ amount: 2.5, test: true });
     expect(chargeAmount({ ...base, method: 'cc-cielo', testAllowed: true, emailMatchesTestEmail: true })).toEqual({ amount: 1, test: true });
     expect(chargeAmount({ ...base, testValueBoleto: 3, testAllowed: true, testRequested: true })).toEqual({ amount: 3, test: true });
+    expect(chargeAmount({ ...base, method: 'pix', testAllowed: true, testUser: true })).toEqual({ amount: 2.5, test: true });
+    expect(chargeAmount({ ...base, method: 'pix', testAllowed: false, testUser: true })).toEqual({ amount: 19990, test: false });
     expect(chargeAmount({ ...base, testAllowed: true })).toEqual({ amount: 19990, test: false });
   });
 });
