@@ -2,3 +2,6 @@ node_modules/
 dist/
 .env
 *.js.map
+
+# Banco Inter certificate is mounted at runtime (/app/certs), never committed or baked in
+certs/
