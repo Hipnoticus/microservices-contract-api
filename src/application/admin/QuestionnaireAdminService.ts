@@ -130,7 +130,8 @@ export class QuestionnaireAdminService {
     return [...map.values()];
   }
 
-  /** tbQuestionnairesAnswers.ID is not an identity column, so ids are allocated under a table lock. */
+  /** AnswerType is allocated under a table lock. ID comes from the IDENTITY column (added 2026-11-22); on a database
+   *  that still lacks it, the old MAX(ID)+1 allocation is used, so the code works before and after the migration. */
   async createScale(body: any, staffId: number) {
     const options = Array.isArray(body?.options) ? body.options : [];
     const clean = options.map((o: any, i: number) => ({
@@ -143,9 +144,14 @@ export class QuestionnaireAdminService {
       const [{ type, nextId }] = await this.db.query<any>(`
         SELECT ISNULL(MAX(AnswerType), 0) + 1 AS type, ISNULL(MAX(ID), 0) + 1 AS nextId FROM tbQuestionnairesAnswers WITH (TABLOCKX, HOLDLOCK)`,
         { type: QueryTypes.SELECT, transaction: t });
+      const [{ hasIdentity }] = await this.db.query<any>(
+        `SELECT CAST(OBJECTPROPERTY(OBJECT_ID('tbQuestionnairesAnswers'), 'TableHasIdentity') AS int) AS hasIdentity`,
+        { type: QueryTypes.SELECT, transaction: t });
       let id = Number(nextId);
       for (const o of clean) {
-        await this.db.query(`
+        await this.db.query(Number(hasIdentity) === 1 ? `
+          INSERT INTO tbQuestionnairesAnswers (Answer, AnswerType, Value, Points, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
+          VALUES (:answer, :type, :value, :points, 0, GETDATE(), GETDATE(), :staffId, :staffId)` : `
           INSERT INTO tbQuestionnairesAnswers (ID, Answer, AnswerType, Value, Points, Blocked, DateCreated, DateModified, CreatedBy, ModifiedBy)
           VALUES (:id, :answer, :type, :value, :points, 0, GETDATE(), GETDATE(), :staffId, :staffId)`,
           { replacements: { id: id++, answer: o.answer, type, value: String(o.points), points: o.points, staffId }, transaction: t });
