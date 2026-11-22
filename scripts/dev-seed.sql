@@ -1,9 +1,12 @@
 ﻿-- Every table with an ID column has IDENTITY(1,1) (dev-schema.sql, 2026-11-22), so seeds that keep fixed IDs use IDENTITY_INSERT.
+-- tbOrdersStatus and tbFormasPagamento have NOT NULL columns beyond what earlier rows here used
+-- (Description/Blocked/DateCreated/DateModified/CreatedBy/ModifiedBy, and IDExt/Blocked/DateCreated/DateModified/CreatedBy),
+-- which made every insert fail (2026-11-22); both now set Blocked=0, timestamps=GETDATE(), audit columns=1.
 SET IDENTITY_INSERT tbOrdersStatus ON;
-INSERT INTO tbOrdersStatus (ID,Name) VALUES (1,'Pendente');
-INSERT INTO tbOrdersStatus (ID,Name) VALUES (2,'Em Analise');
-INSERT INTO tbOrdersStatus (ID,Name) VALUES (3,'Confirmado');
-INSERT INTO tbOrdersStatus (ID,Name) VALUES (4,'Cancelado');
+INSERT INTO tbOrdersStatus (ID,Name,Description,Blocked,DateCreated,DateModified,CreatedBy,ModifiedBy) VALUES (1,'Pendente','Pendente',0,GETDATE(),GETDATE(),1,1);
+INSERT INTO tbOrdersStatus (ID,Name,Description,Blocked,DateCreated,DateModified,CreatedBy,ModifiedBy) VALUES (2,'Em Analise','Em Analise',0,GETDATE(),GETDATE(),1,1);
+INSERT INTO tbOrdersStatus (ID,Name,Description,Blocked,DateCreated,DateModified,CreatedBy,ModifiedBy) VALUES (3,'Confirmado','Confirmado',0,GETDATE(),GETDATE(),1,1);
+INSERT INTO tbOrdersStatus (ID,Name,Description,Blocked,DateCreated,DateModified,CreatedBy,ModifiedBy) VALUES (4,'Cancelado','Cancelado',0,GETDATE(),GETDATE(),1,1);
 SET IDENTITY_INSERT tbOrdersStatus OFF;
 SET IDENTITY_INSERT tbQuestionnairesRequestsStatus ON;
 INSERT INTO tbQuestionnairesRequestsStatus (ID,Name) VALUES (1,'Requested');
@@ -12,9 +15,9 @@ INSERT INTO tbQuestionnairesRequestsStatus (ID,Name) VALUES (3,'Cancelled');
 INSERT INTO tbQuestionnairesRequestsStatus (ID,Name) VALUES (4,'Completed');
 SET IDENTITY_INSERT tbQuestionnairesRequestsStatus OFF;
 SET IDENTITY_INSERT tbTreatmentsPhases ON;
-INSERT INTO tbTreatmentsPhases (ID,Name) VALUES (1,N'Pre-Tratamento');
-INSERT INTO tbTreatmentsPhases (ID,Name) VALUES (2,'Tratamento');
-INSERT INTO tbTreatmentsPhases (ID,Name) VALUES (3,N'Pos-Tratamento');
+INSERT INTO tbTreatmentsPhases (ID,Name,Blocked) VALUES (1,N'Pre-Tratamento',0);
+INSERT INTO tbTreatmentsPhases (ID,Name,Blocked) VALUES (2,'Tratamento',0);
+INSERT INTO tbTreatmentsPhases (ID,Name,Blocked) VALUES (3,N'Pos-Tratamento',0);
 SET IDENTITY_INSERT tbTreatmentsPhases OFF;
 SET IDENTITY_INSERT tbQuestionnairesAnswersTypes ON;
 INSERT INTO tbQuestionnairesAnswersTypes (ID,Name) VALUES (1,'Sim/Nao');
@@ -41,7 +44,7 @@ INSERT INTO tbProducts (ID,Name,NormalPrice,PromotionalPrice) VALUES (2,'20 Sess
 INSERT INTO tbProducts (ID,Name,NormalPrice,PromotionalPrice) VALUES (3,'30 Sessoes - 12 Meses',49990,39990);
 SET IDENTITY_INSERT tbProducts OFF;
 SET IDENTITY_INSERT tbFormasPagamento ON;
-INSERT INTO tbFormasPagamento (ID,Name) VALUES (4,'Cartao de Credito - Cielo');
-INSERT INTO tbFormasPagamento (ID,Name) VALUES (6,'Boleto Bancario - Banco Inter');
+INSERT INTO tbFormasPagamento (ID,Name,Description,Parcelas,IDExt,Blocked,DateCreated,DateModified,CreatedBy,ModifiedBy) VALUES (4,'Cartao de Credito - Cielo','Cartao de Credito - Cielo',1,'cielo',0,GETDATE(),GETDATE(),1,1);
+INSERT INTO tbFormasPagamento (ID,Name,Description,Parcelas,IDExt,Blocked,DateCreated,DateModified,CreatedBy,ModifiedBy) VALUES (6,'Boleto Bancario - Banco Inter','Boleto Bancario - Banco Inter',1,'boleto',0,GETDATE(),GETDATE(),1,1);
 SET IDENTITY_INSERT tbFormasPagamento OFF;
 PRINT 'All seed data inserted';
