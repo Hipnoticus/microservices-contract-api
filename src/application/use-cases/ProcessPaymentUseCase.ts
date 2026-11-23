@@ -58,7 +58,10 @@ export interface PaymentRequest {
   customerBirthDate?: string;
   amount: number;
   installments: number;
-  testMode?: boolean; // ?Teste=1 from legacy
+  /** Ignored since 2026-11-22: test pricing comes only from tbCustomers.TestUser (the owner's test account). */
+  testMode?: boolean;
+  /** Set by the server (never from the body): this charge uses the test value of a TestUser customer. */
+  testCharge?: boolean;
   packageSize?: number;
   mainGoal?: string;
   firstAppointmentDay?: string;
@@ -156,14 +159,17 @@ export class ProcessPaymentUseCase {
 
     let effectiveAmount = orderTotal;
     const testUser = await this.isTestCustomer(order.customerId);
-    const testAllowed = req.staffCaller === true || testUser;
+    // Incident 2026-11-22: the public body's testMode / ?Teste=1 is ignored. Only the owner's test customer
+    // (tbCustomers.TestUser = 1) is charged the test value, and only that customer gets the test fallbacks below.
+    const testAllowed = testUser;
+    let testCharge = false;
     if (testAllowed) {
       try {
         const testConfig = await this.loadTestConfig();
         const decision = chargeAmount({
           orderTotal,
           method: req.paymentMethodIdExt,
-          testRequested: req.testMode === true,
+          testRequested: false,
           emailMatchesTestEmail: !!testConfig.testEmail && req.customerEmail === testConfig.testEmail,
           testAllowed,
           testUser,
@@ -172,6 +178,7 @@ export class ProcessPaymentUseCase {
         });
         if (decision.test) {
           effectiveAmount = decision.amount;
+          testCharge = true;
           logger.info(`TEST MODE: order ${orderId} charged ${effectiveAmount} instead of ${orderTotal}`);
         }
       } catch (e) { logger.error(`Test config load failed: ${(e as Error).message}`); }
@@ -179,7 +186,7 @@ export class ProcessPaymentUseCase {
 
     logger.info(`Processing payment: order=${orderId} method=${req.paymentMethodIdExt} amount=${effectiveAmount}`);
 
-    const effectiveReq = { ...req, orderId, amount: effectiveAmount };
+    const effectiveReq = { ...req, orderId, amount: effectiveAmount, testMode: false, testCharge };
 
     switch (req.paymentMethodIdExt) {
       case 'cc-cielo':
@@ -283,7 +290,7 @@ export class ProcessPaymentUseCase {
 
     // In test mode, treat any Cielo response with a TID as authorized
     // (the card may be declined due to insufficient funds, but the flow should complete)
-    const isTestApproved = req.testMode && result.tid;
+    const isTestApproved = req.testCharge === true && result.tid;
     if (isTestApproved && !result.success) {
       logger.info(`TEST MODE: auto-approving denied transaction tid=${result.tid} (original: ${result.statusMessage})`);
     }
@@ -361,7 +368,7 @@ export class ProcessPaymentUseCase {
 
     // Test mode fallback: if boleto creation failed but we're in test mode,
     // return mock data so the UI flow can be tested end-to-end
-    if (!result.success && req.testMode) {
+    if (!result.success && req.testCharge === true) {
       logger.info(`TEST MODE: boleto creation failed (${result.error}), returning mock boleto data`);
       const mockNossoNumero = `TEST-${req.orderId}-${Date.now()}`;
       const mockLinhaDigitavel = '07099.63532 40000.000004 00000.000408 1 10000000000250';
