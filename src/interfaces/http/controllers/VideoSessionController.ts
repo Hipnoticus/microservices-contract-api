@@ -58,7 +58,7 @@ export class VideoSessionController {
         throw new HttpException({ error: 'Sem permissão para este módulo.' }, HttpStatus.FORBIDDEN);
       }
       identity = `staff-${caller.user.id}`;
-      name = caller.user.name || 'Terapeuta';
+      name = (await this.staffDisplayName(caller.user.id)) || caller.user.name || 'Terapeuta';
       admin = true;
     }
 
@@ -78,6 +78,19 @@ export class VideoSessionController {
     });
     logger.info(`Video token for session ${id} issued to ${identity}`);
     return { url, token, room: `session-${id}`, identity, role: caller.kind === 'customer' ? 'client' : 'therapist' };
+  }
+
+  /** The therapist's full name (tbUsers), shown to the customer in the room; the token only carries the login. */
+  private async staffDisplayName(userId: number): Promise<string> {
+    try {
+      const rows = await this.db.query<any>(
+        `SELECT LTRIM(RTRIM(ISNULL(FirstName, '') + ' ' + ISNULL(LastName, ''))) AS name FROM tbUsers WHERE ID = :id`,
+        { replacements: { id: userId }, type: QueryTypes.SELECT });
+      return String(rows[0]?.name || '').trim();
+    } catch (e: any) {
+      logger.warn(`Could not read the staff name for user ${userId}: ${e?.message}`);
+      return '';
+    }
   }
 
   /** Brasília wall-clock times stored without offset (as everywhere in tbSessions). */
