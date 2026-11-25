@@ -260,7 +260,9 @@ export class InternalAuditController {
   constructor(@Inject('AUDIT') private readonly audit: AuditService) {}
 
   @Post('audit')
-  record(@Headers('x-internal-token') token: string, @Body() body: any) {
+  record(@Headers('x-internal-token') token: string, @Body() body: any, @Req() req?: any) {
+    // The gateway's caller token (X-Caller: gateway-api, verified by the internal-auth middleware), or AUDIT_TOKEN
+    if (req?.internalCaller === 'gateway-api') return this.audit.record(Array.isArray(body) ? body : Array.isArray(body?.entries) ? body.entries : []);
     const expected = process.env.AUDIT_TOKEN || '';
     const given = Buffer.from(String(token || ''));
     const want = Buffer.from(expected);

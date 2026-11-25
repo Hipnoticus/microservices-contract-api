@@ -1,3 +1,4 @@
+import { callerHeaders } from '../../interfaces/http/auth/InternalAuth';
 import { HttpException, HttpStatus } from '@nestjs/common';
 
 export interface OutgoingEmail {
@@ -17,7 +18,7 @@ export async function sendEmail(baseUrl: string, msg: OutgoingEmail): Promise<vo
   try {
     res = await fetch(`${baseUrl}/send`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', ...(token ? { 'X-Internal-Token': token } : {}) },
+      headers: { 'Content-Type': 'application/json; charset=utf-8', ...(token ? { 'X-Internal-Token': token } : {}), ...callerHeaders('contract-api') },
       body: JSON.stringify({
         from, fromName: msg.fromName || 'Hipnoticus', to: msg.to, toName: msg.toName,
         replyTo: 'contato@hipnoterapia.org', subject: msg.subject, content: msg.content,

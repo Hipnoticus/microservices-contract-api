@@ -1,3 +1,4 @@
+import { callerHeaders } from '../../interfaces/http/auth/InternalAuth';
 /**
  * SendConfirmationEmailUseCase — Sends confirmation emails after payment processing.
  *
@@ -261,6 +262,7 @@ export class SendConfirmationEmailUseCase {
           'Content-Type': 'application/json',
           // EmailAPI only lets service clients e-mail customers (EMAIL_API_CLIENT_TOKENS on its side)
           ...(process.env.EMAIL_API_TOKEN ? { 'X-Internal-Token': process.env.EMAIL_API_TOKEN } : {}),
+          ...callerHeaders('contract-api'),
         },
         body: JSON.stringify({ from, fromName: 'Hipnoticus', to, toName, replyTo: from, subject, content }),
       });

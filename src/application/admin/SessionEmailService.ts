@@ -1,3 +1,4 @@
+import { callerHeaders } from '../../interfaces/http/auth/InternalAuth';
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { QueryTypes, Sequelize } from 'sequelize';
 import { Logger } from '../../shared/logger/Logger';
@@ -81,7 +82,7 @@ export class SessionEmailService {
     try {
       res = await fetch(`${this.emailApiBaseUrl}/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json; charset=utf-8', ...(token ? { 'X-Internal-Token': token } : {}) },
+        headers: { 'Content-Type': 'application/json; charset=utf-8', ...(token ? { 'X-Internal-Token': token } : {}), ...callerHeaders('contract-api') },
         body: JSON.stringify({ from: 'contato@hipnoterapia.org', fromName: 'Hipnoticus', to, toName, replyTo: 'contato@hipnoterapia.org', subject, content }),
       });
     } catch (e) {

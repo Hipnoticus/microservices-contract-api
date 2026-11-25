@@ -1,3 +1,4 @@
+import { callerHeaders } from '../../interfaces/http/auth/InternalAuth';
 /**
  * NFS-e now lives in NFeAPI (.NET, nfe-service; SRP refactor phase 3). With NFE_SERVICE_ENABLED=true ContractAPI's
  * NFS-e endpoints (NFSeController and DELETE /admin/nfse/:id) forward to NFeAPI's /internal/** over the Docker network
@@ -29,7 +30,7 @@ export class NfeServiceClient {
     try {
       res = await fetch(`${this.baseUrl.replace(/\/+$/, '')}${path}`, {
         method,
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Service-Token': this.token },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Service-Token': this.token, ...callerHeaders('contract-api') },
         body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify(body ?? {}),
         signal: AbortSignal.timeout(this.timeoutMs),
       });

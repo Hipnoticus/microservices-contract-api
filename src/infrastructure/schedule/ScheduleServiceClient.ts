@@ -1,3 +1,4 @@
+import { callerHeaders } from '../../interfaces/http/auth/InternalAuth';
 /**
  * The agenda now lives in ScheduleAPI (.NET, schedule-service; SRP refactor phase 3). With SCHEDULE_SERVICE_ENABLED=true
  * the payment flow asks it, over the Docker network with X-Service-Token, instead of running ContractAPI's own copy:
@@ -51,7 +52,7 @@ export class ScheduleServiceClient implements SessionReservations, ScheduleRules
     try {
       res = await fetch(`${this.baseUrl.replace(/\/+$/, '')}${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Service-Token': this.token },
+        headers: { 'Content-Type': 'application/json', 'X-Service-Token': this.token, ...callerHeaders('contract-api') },
         body: JSON.stringify(body ?? {}),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
