@@ -200,27 +200,41 @@ export class ExternalPaymentController {
     }
   }
 
-  /** Card data passes through and is never stored or logged. One reference is charged at most once. */
+  /**
+   * Card sales are always captured (owner, 2026-11-26). The card number and security code pass through and are
+   * never stored or logged; Cielo's CardToken is stored as Cielo provides it when the caller asks to save the card
+   * (card.saveCard) and comes back in the response, and a later charge may use it (card.token + securityCode +
+   * brand). One reference is charged at most once.
+   */
   private async processCard(origin: Origin, ref: string, r: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
     if (!this.cieloGateway) return { success: false, error: 'Credit card gateway not configured' };
-    if (!r.card) return { success: false, error: 'Card data required for credit_card method' };
+    const card = r.card;
+    if (!card || (!card.number && !card.token)) return { success: false, error: 'Card data required for credit_card method' };
     const by = `external:${origin.name}`;
     const c = await this.claim(origin, ref, 'credit_card', 'cielo', null, Number(r.amount),
-      (x) => ({ success: true, chargeId: x.ID, transactionId: x.ProviderRef, status: x.Status }),
+      (x) => ({ success: true, chargeId: x.ID, transactionId: x.ProviderRef, status: x.Status, cardToken: x.CardToken ?? null }),
       (x) => CARD_TAKEN.has(x.Status));
     if (typeof c !== 'number') return c;
     try {
-      const cardData: CieloCardData = {
-        cardNumber: r.card.number.replace(/\s/g, ''), holder: r.card.holder, expirationDate: r.card.expirationDate,
-        securityCode: r.card.securityCode, brand: r.card.brand,
-      };
-      const res = await this.cieloGateway.createTransaction(merchantOrderIdFor(origin, ref), r.payerName || origin.name,
-        Number(r.amount), r.installments || 1, cardData);
+      const orderId = merchantOrderIdFor(origin, ref);
+      const res = card.token
+        ? await this.cieloGateway.createTransactionWithToken(orderId, r.payerName || origin.name, Number(r.amount),
+          r.installments || 1, card.token, card.securityCode, card.brand)
+        : await this.cieloGateway.createTransaction(orderId, r.payerName || origin.name, Number(r.amount), r.installments || 1, {
+          cardNumber: card.number!.replace(/\s/g, ''), holder: card.holder!, expirationDate: card.expirationDate!,
+          securityCode: card.securityCode, brand: card.brand,
+        } as CieloCardData, !!card.saveCard);
+      // 2 = PaymentConfirmed (captured). 1 = authorized but not captured: recorded as such so it is visible.
       const status = res.success ? (res.status === 2 ? 'PAID' : 'AUTHORIZED') : 'DENIED';
-      await this.charges!.update(c, { providerRef: res.paymentId || res.tid, status, ...(status === 'PAID' ? { paidAt: new Date() } : {}), by });
+      const cardToken = res.cardToken ?? card.token ?? null;
+      await this.charges!.update(c, {
+        providerRef: res.paymentId || res.tid, status, ...(status === 'PAID' ? { paidAt: new Date() } : {}),
+        ...(cardToken ? { cardToken } : {}), by,
+      });
+      if (status === 'AUTHORIZED') logger.warn(`Card ${orderId} authorized but not captured (Cielo status ${res.status})`);
       return {
         success: res.success, chargeId: c, transactionId: res.tid, authorizationCode: res.authorizationCode,
-        returnCode: res.returnCode, status, error: res.success ? undefined : (res.returnMessage || 'Transaction denied'),
+        returnCode: res.returnCode, status, cardToken, error: res.success ? undefined : (res.returnMessage || 'Transaction denied'),
       };
     } catch (e) {
       // Unknown outcome: keep it PENDING so a retry does not charge twice; the owner checks the Cielo portal.
@@ -243,15 +257,26 @@ export class ExternalPaymentController {
       return { ...base, paid: isCobrancaPaid(charge.Status) || charge.Status === 'CONCLUIDA', status: charge.Status, paidAt: charge.PaidAt };
     }
     if (!this.bancoInterGateway) return { ...base, paid: false, status: 'gateway_not_configured' };
-    const s = charge.Method === 'pix'
-      ? await this.bancoInterGateway.checkPixStatus(charge.ProviderRef).then(x => ({ paid: x.paid, situacao: x.status }))
-      : await this.bancoInterGateway.checkBoletoStatus(charge.ProviderRef);
+    let s: { paid: boolean; situacao: string };
+    let details: ExternalStatusResponse['details'];
+    if (charge.Method === 'pix') {
+      s = await this.bancoInterGateway.checkPixStatus(charge.ProviderRef).then(x => ({ paid: x.paid, situacao: x.status }));
+    } else {
+      // One read gives the status and the boleto/Pix details (the barcode may appear after issuing).
+      const raw = await this.bancoInterGateway.getBoletoDetails(charge.ProviderRef);
+      const d = parseCobranca(raw);
+      s = raw ? { paid: isCobrancaPaid(d.situacao), situacao: d.situacao } : { paid: false, situacao: 'UNKNOWN' };
+      if (raw) {
+        details = { codigoSolicitacao: charge.ProviderRef, seuNumero: charge.SeuNumero, bankNossoNumero: d.bankNossoNumero,
+          linhaDigitavel: d.linhaDigitavel, codigoBarras: d.codigoBarras, pixCopiaECola: d.pixCopiaECola, txid: d.txid };
+      }
+    }
     if (s.situacao && !['UNKNOWN', 'ERROR', ''].includes(s.situacao) && s.situacao !== charge.Status) {
       const paidAt = s.paid ? new Date() : undefined;
       await this.charges.update(charge.ID, { status: s.situacao, ...(paidAt ? { paidAt } : {}), by: `external:${origin.name}` });
-      return { ...base, paid: s.paid, status: s.situacao, paidAt: paidAt ?? null };
+      return { ...base, paid: s.paid, status: s.situacao, paidAt: paidAt ?? null, details };
     }
-    return { ...base, paid: s.paid, status: s.situacao, paidAt: charge.PaidAt };
+    return { ...base, paid: s.paid, status: s.situacao, paidAt: charge.PaidAt, details };
   }
 }
 
@@ -274,7 +299,8 @@ export interface ExternalPaymentRequest {
   payerCpfCnpj?: string;
   payerEmail?: string;
   payerCep?: string;
-  card?: { number: string; holder: string; expirationDate: string; securityCode: string; brand: string };
+  /** A new card (number, holder, expirationDate; saveCard asks Cielo for a CardToken) or a saved one (token). */
+  card?: { number?: string; holder?: string; expirationDate?: string; securityCode: string; brand: string; saveCard?: boolean; token?: string };
   installments?: number;
 }
 
@@ -291,6 +317,8 @@ export interface ExternalPaymentResponse {
   qrCodeBase64?: string | null;
   authorizationCode?: string | null;
   returnCode?: string | null;
+  /** Cielo CardToken of a saved card */
+  cardToken?: string | null;
   linhaDigitavel?: string | null;
   codigoBarras?: string | null;
   error?: string;
@@ -302,4 +330,9 @@ export interface ExternalStatusResponse {
   chargeId?: number;
   method?: string;
   paidAt?: Date | null;
+  /** Boleto: what the payer needs, fresh from Inter */
+  details?: {
+    codigoSolicitacao: string | null; seuNumero: string | null; bankNossoNumero: string | null; linhaDigitavel: string | null;
+    codigoBarras: string | null; pixCopiaECola: string | null; txid: string | null;
+  };
 }

@@ -35,6 +35,8 @@ export interface CieloTransactionResult {
   statusMessage: string;
   returnCode: string | null;
   returnMessage: string | null;
+  /** Cielo's CardToken when the card was saved (SaveCard), stored as Cielo provides it. */
+  cardToken?: string | null;
 }
 
 const CIELO_STATUS: Record<number, string> = {
@@ -62,6 +64,7 @@ export class CieloGateway {
     amount: number, // in BRL (e.g. 19990.00)
     installments: number,
     card: CieloCardData,
+    saveCard = false,
   ): Promise<CieloTransactionResult> {
     // Cielo expects amount in centavos
     const amountCentavos = Math.round(amount * 100);
@@ -74,13 +77,15 @@ export class CieloGateway {
         Amount: amountCentavos,
         Installments: installments,
         SoftDescriptor: 'HIPNOTICUS',
-        Capture: false,
+        // Always capture (owner, 2026-11-26): an authorization alone is never settled and expires.
+        Capture: true,
         CreditCard: {
           CardNumber: card.cardNumber.replace(/\s/g, ''),
           Holder: card.holder,
           ExpirationDate: card.expirationDate,
           SecurityCode: card.securityCode,
           Brand: card.brand,
+          ...(saveCard ? { SaveCard: true } : {}),
         },
       },
     };
@@ -124,6 +129,7 @@ export class CieloGateway {
         statusMessage: CIELO_STATUS[status] || 'Unknown',
         returnCode: payment.ReturnCode || null,
         returnMessage: payment.ReturnMessage || null,
+        cardToken: payment.CreditCard?.CardToken || null,
       };
 
       logger.info(`Cielo result: status=${result.statusMessage} tid=${result.tid} auth=${result.authorizationCode} returnCode=${result.returnCode} returnMsg=${result.returnMessage}`);
@@ -201,7 +207,8 @@ export class CieloGateway {
         Amount: amountCentavos,
         Installments: installments,
         SoftDescriptor: 'HIPNOTICUS',
-        Capture: false,
+        // Always capture (owner, 2026-11-26): an authorization alone is never settled and expires.
+        Capture: true,
         CreditCard: {
           CardToken: cardToken,
           SecurityCode: securityCode,

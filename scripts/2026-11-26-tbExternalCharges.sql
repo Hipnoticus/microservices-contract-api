@@ -10,7 +10,8 @@ BEGIN
     ExternalRef varchar(40) NOT NULL,     -- the caller's order reference (Magento order number)
     Method varchar(20) NOT NULL,          -- boleto, pix, pix_automatico
     Provider varchar(20) NOT NULL,        -- inter
-    ProviderRef varchar(80) NULL,         -- Inter codigoSolicitacao / txid / idRec
+    ProviderRef varchar(80) NULL,         -- Inter codigoSolicitacao / txid / idRec, Cielo PaymentId
+    CardToken varchar(100) NULL,          -- Cielo CardToken, as Cielo provides it (saved cards only)
     SeuNumero varchar(15) NULL,           -- origin code + reference (HO7899464258)
     Amount decimal(12,2) NOT NULL,
     Status varchar(30) NOT NULL,          -- PENDING, FAILED, then Inter's situacao (A_RECEBER, RECEBIDO, ...)
@@ -24,6 +25,10 @@ BEGIN
   CREATE UNIQUE INDEX UX_tbExternalCharges_Ref ON dbo.tbExternalCharges (Origin, ExternalRef, Method);
   CREATE INDEX IX_tbExternalCharges_ProviderRef ON dbo.tbExternalCharges (ProviderRef);
 END
+GO
+-- Added the same day: Cielo's card token for saved cards.
+IF COL_LENGTH('dbo.tbExternalCharges', 'CardToken') IS NULL
+  ALTER TABLE dbo.tbExternalCharges ADD CardToken varchar(100) NULL;
 GO
 -- ContractAPI's own login only (tools/incident-20261123/service-tables.json).
 IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'svc_contract')

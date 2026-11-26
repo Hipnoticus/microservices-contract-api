@@ -113,6 +113,7 @@ export interface ExternalCharge {
   Amount: number;
   Status: string;
   PaidAt: Date | null;
+  CardToken?: string | null;
 }
 
 /** Charges that never reached Inter (or that Inter refused) may be tried again with the same reference. */
@@ -125,7 +126,7 @@ export interface ExternalChargeStore {
   findById(origin: string, id: number): Promise<ExternalCharge | null>;
   /** Claims (origin, ref, method): the new row's id, or null when another request already holds it. */
   claim(c: { origin: string; externalRef: string; method: string; provider: string; seuNumero: string | null; amount: number; by: string }): Promise<number | null>;
-  update(id: number, f: { providerRef?: string | null; status?: string; amount?: number; paidAt?: Date | null; by: string }): Promise<void>;
+  update(id: number, f: { providerRef?: string | null; status?: string; amount?: number; paidAt?: Date | null; cardToken?: string | null; by: string }): Promise<void>;
 }
 
 /** tbExternalCharges (scripts/2026-11-26-tbExternalCharges.sql); svc_contract has SELECT, INSERT, UPDATE on it. */
@@ -138,13 +139,13 @@ export class SqlExternalChargeStore implements ExternalChargeStore {
   }
 
   find(origin: string, externalRef: string, method: string): Promise<ExternalCharge | null> {
-    return this.one(`SELECT ID, Origin, ExternalRef, Method, Provider, ProviderRef, SeuNumero, Amount, Status, PaidAt
+    return this.one(`SELECT ID, Origin, ExternalRef, Method, Provider, ProviderRef, SeuNumero, Amount, Status, PaidAt, CardToken
       FROM dbo.tbExternalCharges WHERE Origin = :origin AND ExternalRef = :externalRef AND Method = :method AND Blocked = 0`,
     { origin, externalRef, method });
   }
 
   findById(origin: string, id: number): Promise<ExternalCharge | null> {
-    return this.one(`SELECT ID, Origin, ExternalRef, Method, Provider, ProviderRef, SeuNumero, Amount, Status, PaidAt
+    return this.one(`SELECT ID, Origin, ExternalRef, Method, Provider, ProviderRef, SeuNumero, Amount, Status, PaidAt, CardToken
       FROM dbo.tbExternalCharges WHERE ID = :id AND Origin = :origin AND Blocked = 0`, { origin, id });
   }
 
@@ -164,13 +165,14 @@ export class SqlExternalChargeStore implements ExternalChargeStore {
     }
   }
 
-  async update(id: number, f: { providerRef?: string | null; status?: string; amount?: number; paidAt?: Date | null; by: string }): Promise<void> {
+  async update(id: number, f: { providerRef?: string | null; status?: string; amount?: number; paidAt?: Date | null; cardToken?: string | null; by: string }): Promise<void> {
     const sets = ['DateModified = SYSDATETIME()', 'ModifiedBy = :by'];
     const r: Record<string, unknown> = { id, by: f.by };
     if (f.providerRef !== undefined) { sets.push('ProviderRef = :providerRef'); r.providerRef = f.providerRef; }
     if (f.status !== undefined) { sets.push('Status = :status'); r.status = f.status; }
     if (f.amount !== undefined) { sets.push('Amount = :amount'); r.amount = f.amount; }
     if (f.paidAt !== undefined) { sets.push('PaidAt = :paidAt'); r.paidAt = f.paidAt; }
+    if (f.cardToken !== undefined) { sets.push('CardToken = :cardToken'); r.cardToken = f.cardToken; }
     await this.db.query(`UPDATE dbo.tbExternalCharges SET ${sets.join(', ')} WHERE ID = :id`, { replacements: r });
   }
 }

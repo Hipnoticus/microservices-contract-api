@@ -23,6 +23,7 @@ class MemoryStore implements ExternalChargeStore {
     if (f.providerRef !== undefined) r.ProviderRef = f.providerRef;
     if (f.status !== undefined) r.Status = f.status;
     if (f.paidAt !== undefined) r.PaidAt = f.paidAt;
+    if (f.cardToken !== undefined) r.CardToken = f.cardToken;
   }
 }
 
@@ -40,7 +41,7 @@ function fakeInter(opts: { fail?: boolean; situacao?: string } = {}) {
     async createPixCobranca(name: string, cpf: string, amount: number, orderId: string, desc: string, txid: string) {
       calls.push({ op: 'pix', txid }); return { success: true, txid, pixCopiaECola: 'PIXCC', qrCodeBase64: null, error: null };
     },
-    async getBoletoDetails(cod: string) { calls.push({ op: 'details', cod }); return { cobranca: { situacao: 'A_RECEBER' }, boleto: { linhaDigitavel: 'LD', nossoNumero: '123' }, pix: { pixCopiaECola: 'PIX' } }; },
+    async getBoletoDetails(cod: string) { calls.push({ op: 'details', cod }); return { cobranca: { situacao: opts.situacao ?? 'A_RECEBER' }, boleto: { linhaDigitavel: 'LD', nossoNumero: '123' }, pix: { pixCopiaECola: 'PIX' } }; },
     async checkBoletoStatus(cod: string) { calls.push({ op: 'status', cod }); const s = opts.situacao ?? 'A_RECEBER'; return { paid: s === 'RECEBIDO', situacao: s }; },
     async getBoletoPdf(cod: string) { calls.push({ op: 'pdf', cod }); return 'JVBERi0='; },
     async checkPixStatus() { return { paid: false, status: 'ATIVA' }; },
@@ -57,9 +58,13 @@ function fakeCielo(status = 1) {
   const calls: any[] = [];
   return {
     calls,
-    async createTransaction(orderId: string) {
+    async createTransaction(orderId: string, n: string, a: number, i: number, card: any, saveCard: boolean) {
       calls.push(orderId);
-      return { success: status === 1 || status === 2, paymentId: 'pay-1', tid: 'tid-1', authorizationCode: 'A1', status, statusMessage: '', returnCode: '00', returnMessage: 'ok' };
+      return { success: status === 1 || status === 2, paymentId: 'pay-1', tid: 'tid-1', authorizationCode: 'A1', status, statusMessage: '', returnCode: '00', returnMessage: 'ok', cardToken: saveCard ? 'cielo-token-1' : null };
+    },
+    async createTransactionWithToken(orderId: string, n: string, a: number, i: number, token: string) {
+      calls.push(orderId + ':' + token);
+      return { success: true, paymentId: 'pay-2', tid: 'tid-2', authorizationCode: 'A2', status: 2, statusMessage: '', returnCode: '00', returnMessage: 'ok' };
     },
   } as any;
 }
@@ -190,7 +195,7 @@ describe('ExternalPaymentController', () => {
     expect((await c.checkStatus(hipno, { externalRef: '7899464258', method: 'boleto' })).paid).toBe(true);
     expect(store.rows[0].PaidAt).not.toBeNull();
     await c.checkStatus(hipno, { chargeId: 1 });
-    expect(paidInter.calls.filter((x: any) => x.op === 'status').length).toBe(1);
+    expect(paidInter.calls.filter((x: any) => x.op === 'details').length).toBe(1);
   });
 
   test("a caller cannot read another origin's charge", async () => {
@@ -240,5 +245,20 @@ describe('Pix Automatico operations', () => {
 
   test('unknown operations are refused', async () => {
     expect((await new PixAutomaticoOps(fakeInter(), new MemoryStore(), env).run(ho, { op: 'webhook.put' })).http).toBe(400);
+  });
+});
+
+describe('cards: always captured, Cielo token stored as provided', () => {
+  test('saveCard stores the CardToken; a later charge by token works and is PAID', async () => {
+    const cielo = fakeCielo(2); const store = new MemoryStore();
+    const c = new ExternalPaymentController(cielo, fakeInter(), store);
+    const a = await c.processExternal(gatewayService, { method: 'credit_card', amount: 9, externalRef: 'S1', card: { number: '4111111111111111', holder: 'T', expirationDate: '12/2030', securityCode: '123', brand: 'Visa', saveCard: true } } as any);
+    expect(a.status).toBe('PAID');
+    expect(a.cardToken).toBe('cielo-token-1');
+    expect(store.rows[0].CardToken).toBe('cielo-token-1');
+    expect(store.rows[0].PaidAt).not.toBeNull();
+    const b = await c.processExternal(gatewayService, { method: 'credit_card', amount: 9, externalRef: 'S2', card: { token: 'cielo-token-1', securityCode: '123', brand: 'Visa' } } as any);
+    expect(b.status).toBe('PAID');
+    expect(cielo.calls).toEqual(['AM-S1', 'AM-S2:cielo-token-1']);
   });
 });
