@@ -272,3 +272,15 @@ describe('boletos issued before ContractAPI', () => {
     expect(other.status).toBe('not_found');
   });
 });
+describe('boleto paid by its Pix is confirmed at once', () => {
+  test('cobranca still A_RECEBER, its cobv CONCLUIDA -> paid', async () => {
+    const store = new MemoryStore();
+    await new ExternalPaymentController(null, fakeInter(), store).processExternal(hipno, { ...body, externalRef: '79000000009' } as any);
+    const inter = fakeInter();
+    inter.getBoletoDetails = async () => ({ cobranca: { situacao: 'A_RECEBER' }, boleto: { linhaDigitavel: 'LD' }, pix: { txid: 'T'.repeat(30), pixCopiaECola: 'P' } });
+    inter.pixApi = async (m: string, path: string) => ({ status: 200, data: { status: path.startsWith('/pix/v2/cobv/') ? 'CONCLUIDA' : 'ATIVA' } });
+    const s = await new ExternalPaymentController(null, inter, store).checkStatus(hipno, { externalRef: '79000000009', method: 'boleto' });
+    expect(s.paid).toBe(true);
+    expect(store.rows[0].Status).toBe('RECEBIDO');
+  });
+});

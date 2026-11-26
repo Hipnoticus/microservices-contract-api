@@ -14,6 +14,10 @@ const logger = new Logger('ExternalPaymentController');
 /** Card results that already took the customer's money (or reserved it): never charge the same reference again. */
 const CARD_TAKEN = new Set(['AUTHORIZED', 'PAID']);
 
+/** Last Inter answer per charge, so pages polling every second do not hit Inter's rate limit. */
+const STATUS_CACHE = new Map<string, { at: number; res: ExternalStatusResponse }>();
+const STATUS_CACHE_MS = 1500;
+
 /**
  * Payments for other applications (Hipno Online, Amode, and any brand or app added to EXTERNAL_PAYMENT_ORIGINS).
  * ContractAPI holds every bank and acquirer credential; the applications hold only their caller token.
@@ -279,15 +283,34 @@ export class ExternalPaymentController {
       return { ...base, paid: isCobrancaPaid(charge.Status) || charge.Status === 'CONCLUIDA', status: charge.Status, paidAt: charge.PaidAt };
     }
     if (!this.bancoInterGateway) return { ...base, paid: false, status: 'gateway_not_configured' };
+    // Checkout pages poll every second: Inter is asked at most once per STATUS_CACHE_MS per charge.
+    const key = `${charge.Origin}:${charge.ID}:${charge.ExternalRef}:${charge.ProviderRef}`;
+    const hit = STATUS_CACHE.get(key);
+    if (hit && Date.now() - hit.at < STATUS_CACHE_MS) return hit.res;
+    const res = await this.freshStatus(origin, charge, base);
+    STATUS_CACHE.set(key, { at: Date.now(), res });
+    if (STATUS_CACHE.size > 5000) STATUS_CACHE.clear();
+    return res;
+  }
+
+  private async freshStatus(origin: Origin, charge: ExternalCharge, base: { chargeId: number; method: string }): Promise<ExternalStatusResponse> {
+    const store = this.charges!;
     let s: { paid: boolean; situacao: string };
     let details: ExternalStatusResponse['details'];
     if (charge.Method === 'pix') {
-      s = await this.bancoInterGateway.checkPixStatus(charge.ProviderRef).then(x => ({ paid: x.paid, situacao: x.status }));
+      s = await this.bancoInterGateway!.checkPixStatus(charge.ProviderRef!).then(x => ({ paid: x.paid, situacao: x.status }));
     } else {
       // One read gives the status and the boleto/Pix details (the barcode may appear after issuing).
-      const raw = await this.bancoInterGateway.getBoletoDetails(charge.ProviderRef);
+      const raw = await this.bancoInterGateway!.getBoletoDetails(charge.ProviderRef!);
       const d = parseCobranca(raw);
       s = raw ? { paid: isCobrancaPaid(d.situacao), situacao: d.situacao } : { paid: false, situacao: 'UNKNOWN' };
+      // Paid by its Pix: the due-date Pix (cobv) is CONCLUIDA at once, while the cobranca's situacao reaches
+      // RECEBIDO only some seconds later. Asking the Pix makes the confirmation immediate.
+      if (raw && !s.paid && d.txid && ['A_RECEBER', 'ATRASADO', 'EM_PROCESSAMENTO'].includes(d.situacao)) {
+        const pix = await this.bancoInterGateway!.pixApi('GET', `/pix/v2/cobv/${encodeURIComponent(d.txid)}`, undefined, 'cobv.read')
+          .catch(() => ({ status: 0, data: null }));
+        if (pix.status === 200 && String(pix.data?.status).toUpperCase() === 'CONCLUIDA') s = { paid: true, situacao: 'RECEBIDO' };
+      }
       if (raw) {
         details = { codigoSolicitacao: charge.ProviderRef, seuNumero: charge.SeuNumero, bankNossoNumero: d.bankNossoNumero,
           linhaDigitavel: d.linhaDigitavel, codigoBarras: d.codigoBarras, pixCopiaECola: d.pixCopiaECola, txid: d.txid };
@@ -295,7 +318,7 @@ export class ExternalPaymentController {
     }
     if (s.situacao && !['UNKNOWN', 'ERROR', ''].includes(s.situacao) && s.situacao !== charge.Status) {
       const paidAt = s.paid ? new Date() : undefined;
-      await this.charges.update(charge.ID, { status: s.situacao, ...(paidAt ? { paidAt } : {}), by: `external:${origin.name}` });
+      await store.update(charge.ID, { status: s.situacao, ...(paidAt ? { paidAt } : {}), by: `external:${origin.name}` });
       return { ...base, paid: s.paid, status: s.situacao, paidAt: paidAt ?? null, details };
     }
     return { ...base, paid: s.paid, status: s.situacao, paidAt: charge.PaidAt, details };
