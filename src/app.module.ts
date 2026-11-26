@@ -28,6 +28,7 @@ import { NFSeController } from './interfaces/http/controllers/NFSeController';
 import { LeadController } from './interfaces/http/controllers/LeadController';
 import { HealthController } from './interfaces/http/controllers/HealthController';
 import { ExternalPaymentController } from './interfaces/http/controllers/ExternalPaymentController';
+import { SqlExternalChargeStore } from './application/payment/ExternalCharges';
 import { GoogleCalendarController, GoogleCalendarContext } from './interfaces/http/controllers/GoogleCalendarController';
 import { GoogleCalendarClient } from './infrastructure/google/GoogleCalendarClient';
 import { GoogleCalendarSyncJob } from './infrastructure/google/GoogleCalendarSyncJob';
@@ -184,6 +185,12 @@ const logger = new Logger('AppModule');
           sandbox: false,
         });
       },
+    },
+    {
+      // Charges made for other applications (Hipno Online), table from scripts/2026-11-26-tbExternalCharges.sql
+      provide: 'EXTERNAL_CHARGES',
+      useFactory: (db: Sequelize) => new SqlExternalChargeStore(db),
+      inject: ['DATABASE'],
     },
     {
       provide: 'SEND_EMAIL',
