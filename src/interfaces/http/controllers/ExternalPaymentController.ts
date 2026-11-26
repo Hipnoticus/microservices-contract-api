@@ -70,7 +70,7 @@ export class ExternalPaymentController {
 
   @Post('status')
   @ApiOperation({ summary: 'Status of a charge: { chargeId } or { externalRef, method }; Amode may still send a Pix { txid }' })
-  async checkStatus(@Req() req: any, @Body() body: { txid?: string; chargeId?: number; externalRef?: string; method?: string }): Promise<ExternalStatusResponse> {
+  async checkStatus(@Req() req: any, @Body() body: { txid?: string; chargeId?: number; externalRef?: string; method?: string; codigoSolicitacao?: string }): Promise<ExternalStatusResponse> {
     const origin = this.origin(req);
     if (body?.chargeId !== undefined || body?.externalRef) return this.recordedStatus(origin, body);
     if (origin.name !== 'amode') return { paid: false, status: 'missing_charge' };
@@ -243,11 +243,33 @@ export class ExternalPaymentController {
     }
   }
 
-  private async recordedStatus(origin: Origin, body: { chargeId?: number; externalRef?: string; method?: string }): Promise<ExternalStatusResponse> {
+  /**
+   * A boleto the caller issued itself before using ContractAPI (Hipno Online until 2026-11): recorded as the
+   * caller's only when Inter's own record of that codigoSolicitacao carries the caller's reference as seuNumero.
+   */
+  private async adoptBoleto(origin: Origin, ref: string, codigoSolicitacao: string): Promise<ExternalCharge | null> {
+    if (!this.bancoInterGateway || !this.charges || !/^[A-Za-z0-9-]{8,80}$/.test(codigoSolicitacao)) return null;
+    const raw = await this.bancoInterGateway.getBoletoDetails(codigoSolicitacao);
+    const seu = String(raw?.cobranca?.seuNumero ?? '');
+    const plainRef = ref.replace(/[^A-Za-z0-9]/g, '');
+    if (!seu || (seu !== plainRef && seu !== origin.code + plainRef)) return null;
+    const by = `external:${origin.name}`;
+    const id = await this.charges.claim({ origin: origin.name, externalRef: ref, method: 'boleto', provider: 'inter', seuNumero: seu,
+      amount: Number(raw?.cobranca?.valorNominal) || 0, by });
+    if (id === null) return this.charges.find(origin.name, ref, 'boleto');
+    await this.charges.update(id, { providerRef: codigoSolicitacao, status: String(raw?.cobranca?.situacao || 'A_RECEBER').toUpperCase(), by });
+    logger.info(`Adopted ${origin.name} boleto ${ref} (issued before ContractAPI)`);
+    return this.charges.findById(origin.name, id);
+  }
+
+  private async recordedStatus(origin: Origin, body: { chargeId?: number; externalRef?: string; method?: string; codigoSolicitacao?: string }): Promise<ExternalStatusResponse> {
     if (!this.charges) return { paid: false, status: 'registry_not_configured' };
-    const charge = body.chargeId !== undefined
+    let charge = body.chargeId !== undefined
       ? await this.ownCharge(origin, Number(body.chargeId))
       : await this.charges.find(origin.name, String(body.externalRef), body.method || 'boleto');
+    if (!charge && body.externalRef && body.codigoSolicitacao && (body.method || 'boleto') === 'boleto') {
+      charge = await this.adoptBoleto(origin, String(body.externalRef), String(body.codigoSolicitacao));
+    }
     if (!charge) return { paid: false, status: 'not_found' };
     const base = { chargeId: charge.ID, method: charge.Method };
     if (!charge.ProviderRef || charge.Method === 'credit_card') {

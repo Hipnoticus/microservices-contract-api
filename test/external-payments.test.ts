@@ -41,7 +41,7 @@ function fakeInter(opts: { fail?: boolean; situacao?: string } = {}) {
     async createPixCobranca(name: string, cpf: string, amount: number, orderId: string, desc: string, txid: string) {
       calls.push({ op: 'pix', txid }); return { success: true, txid, pixCopiaECola: 'PIXCC', qrCodeBase64: null, error: null };
     },
-    async getBoletoDetails(cod: string) { calls.push({ op: 'details', cod }); return { cobranca: { situacao: opts.situacao ?? 'A_RECEBER' }, boleto: { linhaDigitavel: 'LD', nossoNumero: '123' }, pix: { pixCopiaECola: 'PIX' } }; },
+    async getBoletoDetails(cod: string) { calls.push({ op: 'details', cod }); return { cobranca: { situacao: opts.situacao ?? 'A_RECEBER', seuNumero: cod === 'legacy-cod-1' ? '7899464200' : 'X', valorNominal: 10 }, boleto: { linhaDigitavel: 'LD', nossoNumero: '123' }, pix: { pixCopiaECola: 'PIX' } }; },
     async checkBoletoStatus(cod: string) { calls.push({ op: 'status', cod }); const s = opts.situacao ?? 'A_RECEBER'; return { paid: s === 'RECEBIDO', situacao: s }; },
     async getBoletoPdf(cod: string) { calls.push({ op: 'pdf', cod }); return 'JVBERi0='; },
     async checkPixStatus() { return { paid: false, status: 'ATIVA' }; },
@@ -260,5 +260,15 @@ describe('cards: always captured, Cielo token stored as provided', () => {
     const b = await c.processExternal(gatewayService, { method: 'credit_card', amount: 9, externalRef: 'S2', card: { token: 'cielo-token-1', securityCode: '123', brand: 'Visa' } } as any);
     expect(b.status).toBe('PAID');
     expect(cielo.calls).toEqual(['AM-S1', 'AM-S2:cielo-token-1']);
+  });
+});
+describe('boletos issued before ContractAPI', () => {
+  test('adopted only when Inter shows the caller reference as seuNumero', async () => {
+    const store = new MemoryStore(); const c = new ExternalPaymentController(null, fakeInter(), store);
+    const ok = await c.checkStatus(hipno, { externalRef: '7899464200', method: 'boleto', codigoSolicitacao: 'legacy-cod-1' });
+    expect(ok.status).toBe('A_RECEBER');
+    expect(store.rows[0].ProviderRef).toBe('legacy-cod-1');
+    const other = await c.checkStatus(hipno, { externalRef: '7899464201', method: 'boleto', codigoSolicitacao: 'someone-elses' });
+    expect(other.status).toBe('not_found');
   });
 });
