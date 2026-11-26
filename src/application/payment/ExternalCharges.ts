@@ -1,23 +1,56 @@
 /**
- * Charges ContractAPI creates for other applications (/payments/external/**): who asked for them and how the bank
- * statement can tell them apart (.plans/HIPNOONLINE_CONTRACTAPI_PAYMENTS_PLAN.md).
+ * Charges ContractAPI creates for other applications (/payments/external/**): every one of them carries the
+ * application it came from, whatever the method (boleto, Pix, card, Pix Automatico) and the provider behind it
+ * (.plans/HIPNOONLINE_CONTRACTAPI_PAYMENTS_PLAN.md).
  *
  * The origin comes from the caller's authenticated identity, never from the request body:
- *   - a direct caller with a valid X-Caller token listed in EXTERNAL_PAYMENT_CALLERS (default "hipno-online");
+ *   - a direct caller with a valid X-Caller token that has an entry in EXTERNAL_PAYMENT_ORIGINS;
  *   - a gateway-signed call with X-User-Type: service, which today is only Amode (the shared service credential).
- * Each origin has a code that starts the boleto's seuNumero (and, later, our own Pix txids), so BIService can show
- * the origin of every received payment without asking anyone: HO = Hipno Online, AM = Amode; plain numbers = Moses.
+ * Each origin has a code that starts the boleto's seuNumero, the Pix txid and Cielo's MerchantOrderId, so BIService
+ * and the Cielo portal show the origin of every payment without asking anyone (HO = Hipno Online, AM = Amode;
+ * Moses' own orders keep plain numbers).
  */
+import { randomBytes } from 'crypto';
 import { Sequelize, QueryTypes } from 'sequelize';
 import { CALLER_PROP } from '../../interfaces/http/auth/InternalAuth';
 
-export interface Origin { name: string; code: string }
+/** The payment methods any origin may be given. The provider behind each one is ContractAPI's business. */
+export const METHODS = ['boleto', 'pix', 'credit_card', 'pix_automatico'] as const;
+export type Method = typeof METHODS[number];
 
-/** Caller name -> origin. Only names listed here (and allowed by EXTERNAL_PAYMENT_CALLERS) may use the routes. */
-export const ORIGINS: Record<string, Origin> = {
-  'hipno-online': { name: 'hipno-online', code: 'HO' },
-  amode: { name: 'amode', code: 'AM' },
-};
+/** An application that pays through ContractAPI: its caller name, its code in bank references, what it may use. */
+export interface Origin { name: string; code: string; methods: Method[] }
+
+/**
+ * Origins are configuration, not code: a new brand or app (Sono Perfeito, Kura 5, ...) gets a caller token
+ * (AGENTS.md "Add a caller") and one entry here, nothing else changes.
+ *   EXTERNAL_PAYMENT_ORIGINS = caller=CODE:method|method,...   e.g. hipno-online=HO:boleto|pix|pix_automatico
+ * CODE: 2 to 4 capital letters or digits, unique; it starts the boleto's seuNumero, the Pix txid and Cielo's
+ * MerchantOrderId, so the bank statement and the acquirer's portal show where each payment came from.
+ * "amode" is the origin of gateway-signed service calls (the shared service credential, used only by Amode).
+ */
+export const DEFAULT_ORIGINS = 'hipno-online=HO:boleto|pix|pix_automatico,amode=AM:boleto|pix|credit_card';
+
+export function parseOrigins(spec: string | undefined): Map<string, Origin> {
+  const out = new Map<string, Origin>();
+  const codes = new Set<string>();
+  for (const raw of (spec && spec.trim() ? spec : DEFAULT_ORIGINS).split(',')) {
+    const m = /^\s*([a-z0-9][a-z0-9-]{1,39})\s*=\s*([A-Z0-9]{2,4})\s*:\s*([a-z_|]+)\s*$/.exec(raw);
+    if (!m) throw new Error(`EXTERNAL_PAYMENT_ORIGINS: bad entry "${raw.trim()}" (caller=CODE:method|method)`);
+    const methods = m[3].split('|').filter(Boolean) as Method[];
+    for (const x of methods) if (!(METHODS as readonly string[]).includes(x)) throw new Error(`EXTERNAL_PAYMENT_ORIGINS: unknown method ${x}`);
+    if (codes.has(m[2]) || /^\d+$/.test(m[2])) throw new Error(`EXTERNAL_PAYMENT_ORIGINS: code ${m[2]} repeated or only digits`);
+    codes.add(m[2]);
+    out.set(m[1], { name: m[1], code: m[2], methods });
+  }
+  return out;
+}
+
+let cached: { spec: string | undefined; origins: Map<string, Origin> } | null = null;
+export function origins(env: Record<string, string | undefined> = process.env): Map<string, Origin> {
+  if (!cached || cached.spec !== env.EXTERNAL_PAYMENT_ORIGINS) cached = { spec: env.EXTERNAL_PAYMENT_ORIGINS, origins: parseOrigins(env.EXTERNAL_PAYMENT_ORIGINS) };
+  return cached.origins;
+}
 
 function one(v: unknown): string {
   return String(Array.isArray(v) ? v[0] ?? '' : v ?? '').trim();
@@ -30,17 +63,33 @@ function one(v: unknown): string {
  */
 export function originOf(req: any, env: Record<string, string | undefined> = process.env,
   log: (msg: string) => void = (m) => console.warn(m)): Origin | null {
+  const all = origins(env);
   const caller = one(req?.[CALLER_PROP]).toLowerCase();
   const userType = one(req?.headers?.['x-user-type']).toLowerCase();
-  if (caller === 'gateway') return userType === 'service' ? ORIGINS.amode : null;
-  const allowed = (env.EXTERNAL_PAYMENT_CALLERS ?? 'hipno-online').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-  if (caller && allowed.includes(caller) && ORIGINS[caller]) return ORIGINS[caller];
+  if (caller === 'gateway') return userType === 'service' ? all.get('amode') ?? null : null;
+  if (caller && caller !== 'amode' && all.has(caller)) return all.get(caller)!;
   const mode = (env.INTERNAL_AUTH_MODE ?? '').trim().toLowerCase();
   if (!caller && userType === 'service' && mode !== 'enforce') {
     log('external-payments would refuse an unsigned service call (accepted as amode while INTERNAL_AUTH_MODE is not enforce)');
-    return ORIGINS.amode;
+    return all.get('amode') ?? null;
   }
   return null;
+}
+
+/** Inter's Pix txid (26 to 35 letters and digits): origin code + reference + random letters and digits. */
+export function pixTxidFor(origin: Origin, externalRef: string, random: () => string = randomAlnum): string {
+  let s = (origin.code + externalRef.replace(/[^A-Za-z0-9]/g, '')).substring(0, 25);
+  while (s.length < 35) s += random();
+  return s.substring(0, 35);
+}
+
+function randomAlnum(): string {
+  return randomBytes(16).toString('base64').replace(/[^A-Za-z0-9]/g, '');
+}
+
+/** Cielo MerchantOrderId (up to 50): origin code + reference. */
+export function merchantOrderIdFor(origin: Origin, externalRef: string): string {
+  return (origin.code + '-' + externalRef.replace(/[^A-Za-z0-9-]/g, '')).substring(0, 50);
 }
 
 /** External references are the caller's own order ids: letters, digits and "-", short enough for seuNumero. */

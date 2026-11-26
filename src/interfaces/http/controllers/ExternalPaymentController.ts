@@ -1,21 +1,28 @@
-import { Controller, Post, Get, Body, Param, Req, Inject, Optional, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, Req, Inject, Optional, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { CieloGateway, CieloCardData } from '../../../infrastructure/payment/CieloGateway';
 import { BancoInterGateway, parseCobranca, isCobrancaPaid } from '../../../infrastructure/payment/BancoInterGateway';
-import { EXTERNAL_REF, FINAL, RETRYABLE, originOf, seuNumeroFor } from '../../../application/payment/ExternalCharges';
-import type { ExternalCharge, ExternalChargeStore, Origin } from '../../../application/payment/ExternalCharges';
+import {
+  EXTERNAL_REF, FINAL, RETRYABLE, merchantOrderIdFor, originOf, pixTxidFor, seuNumeroFor,
+} from '../../../application/payment/ExternalCharges';
+import type { ExternalCharge, ExternalChargeStore, Method, Origin } from '../../../application/payment/ExternalCharges';
+import { PixAutomaticoOps } from '../../../application/payment/PixAutomaticoOps';
 import { Logger } from '../../../shared/logger/Logger';
 
 const logger = new Logger('ExternalPaymentController');
 
+/** Card results that already took the customer's money (or reserved it): never charge the same reference again. */
+const CARD_TAKEN = new Set(['AUTHORIZED', 'PAID']);
+
 /**
- * External B2B payment endpoint for other applications: Amode (through the gateway, service credential) and Hipno
- * Online (direct caller "hipno-online"). The charge goes through Cielo/BancoInter and the raw result comes back; the
- * calling application keeps its own business rules (subscription activation, order states).
+ * Payments for other applications (Hipno Online, Amode, and any brand or app added to EXTERNAL_PAYMENT_ORIGINS).
+ * ContractAPI holds every bank and acquirer credential; the applications hold only their caller token.
  *
- * No Hipnoticus orders are created. Every request must say who it is (originOf): the origin decides the seuNumero
- * prefix and which charges the caller may read. Hipno Online charges are recorded in tbExternalCharges by the
- * caller's own order reference, so a retry returns the same boleto instead of issuing a second one.
+ * Every request says who it is (originOf, from the authenticated caller) and every charge is recorded in
+ * tbExternalCharges with that origin, whatever the method and the provider behind it. The origin's code starts
+ * the boleto's seuNumero, the Pix txid and Cielo's MerchantOrderId. A charge is identified by the caller's own
+ * reference (externalRef): asking again for the same reference returns the same charge instead of a second one.
+ * No Hipnoticus order is created; the caller keeps its own business rules.
  */
 @ApiTags('External Payments (B2B)')
 @Controller('payments/external')
@@ -35,47 +42,40 @@ export class ExternalPaymentController {
     return o;
   }
 
+  private allowed(origin: Origin, method: string): method is Method {
+    return (origin.methods as string[]).includes(method);
+  }
+
   @Post('process')
-  @ApiOperation({ summary: 'Process external B2B payment (Amode or Hipno Online -> ContractAPI -> Cielo/BancoInter)' })
+  @ApiOperation({ summary: 'One charge for the calling application: boleto, pix or credit_card, by its own externalRef' })
   async processExternal(@Req() req: any, @Body() body: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
     const origin = this.origin(req);
     const r: ExternalPaymentRequest = body || ({} as ExternalPaymentRequest);
-    logger.info(`External payment: origin=${origin.name} method=${r.method} amount=${r.amount} ref=${r.externalRef ?? r.tenantId ?? '-'}`);
-    if (!(Number(r.amount) > 0)) {
-      return { success: false, error: 'Invalid amount' };
+    if (!(Number(r.amount) > 0)) return { success: false, error: 'Invalid amount' };
+    if (!this.allowed(origin, r.method) || r.method === 'pix_automatico') {
+      return { success: false, error: `Method ${r.method} is not available for ${origin.name}` };
     }
-    if (origin.name !== 'amode') {
-      // Hipno Online: boleto (with its Pix) only, always by its own order reference.
-      if (r.method !== 'boleto') return { success: false, error: `Method ${r.method} is not available for ${origin.name}` };
-      if (!r.externalRef || !EXTERNAL_REF.test(r.externalRef)) return { success: false, error: 'externalRef required (letters, digits, -)' };
-      return this.processRecordedBoleto(origin, r);
-    }
+    // Amode has always called without a reference; every other origin must send its own.
+    const ref = r.externalRef ?? (origin.name === 'amode' ? `T${Date.now().toString(36).toUpperCase()}` : undefined);
+    if (!ref || !EXTERNAL_REF.test(ref)) return { success: false, error: 'externalRef required (letters, digits, -)' };
+    if (!this.charges) return { success: false, error: 'External charges registry not configured' };
+    logger.info(`External payment: origin=${origin.name} method=${r.method} amount=${r.amount} ref=${ref}`);
     switch (r.method) {
-      case 'pix':
-        return this.processPix(r);
-      case 'credit_card':
-        return this.processCreditCard(r);
-      case 'boleto':
-        return this.processBoleto(r);
-      default:
-        return { success: false, error: `Unknown payment method: ${r.method}` };
+      case 'boleto': return this.processBoleto(origin, ref, r);
+      case 'pix': return this.processPix(origin, ref, r);
+      case 'credit_card': return this.processCard(origin, ref, r);
+      default: return { success: false, error: `Unknown payment method: ${r.method}` };
     }
   }
 
   @Post('status')
-  @ApiOperation({ summary: 'Status of an external charge: { chargeId } or { externalRef, method }, or a PIX { txid } (Amode)' })
+  @ApiOperation({ summary: 'Status of a charge: { chargeId } or { externalRef, method }; Amode may still send a Pix { txid }' })
   async checkStatus(@Req() req: any, @Body() body: { txid?: string; chargeId?: number; externalRef?: string; method?: string }): Promise<ExternalStatusResponse> {
     const origin = this.origin(req);
-    if (!this.bancoInterGateway) {
-      return { paid: false, status: 'gateway_not_configured' };
-    }
-    if (body?.chargeId !== undefined || body?.externalRef) {
-      return this.recordedStatus(origin, body);
-    }
+    if (body?.chargeId !== undefined || body?.externalRef) return this.recordedStatus(origin, body);
     if (origin.name !== 'amode') return { paid: false, status: 'missing_charge' };
-    if (!body?.txid) {
-      return { paid: false, status: 'missing_txid' };
-    }
+    if (!this.bancoInterGateway) return { paid: false, status: 'gateway_not_configured' };
+    if (!body?.txid) return { paid: false, status: 'missing_txid' };
     try {
       return await this.bancoInterGateway.checkPixStatus(body.txid);
     } catch (e) {
@@ -85,7 +85,7 @@ export class ExternalPaymentController {
   }
 
   @Get('charges/:id/pdf')
-  @ApiOperation({ summary: "Boleto PDF (base64) of one of the caller's own recorded charges" })
+  @ApiOperation({ summary: "Boleto PDF (base64) of one of the caller's own charges" })
   async chargePdf(@Req() req: any, @Param('id') id: string): Promise<{ pdf: string | null; error?: string }> {
     const origin = this.origin(req);
     const charge = await this.ownCharge(origin, Number(id));
@@ -94,67 +94,73 @@ export class ExternalPaymentController {
     return { pdf: await this.bancoInterGateway.getBoletoPdf(charge.ProviderRef) };
   }
 
-  // ---------------------------------------------------------------- recorded charges (Hipno Online)
+  @Post('pix-automatico')
+  @ApiOperation({ summary: "Pix Automatico operations for the caller's own mandates and charges (Inter's answer unchanged)" })
+  async pixAutomatico(@Req() req: any, @Body() body: { op: string; txid?: string; idRec?: string; payload?: any }): Promise<{ http: number; body: any }> {
+    const origin = this.origin(req);
+    if (!this.allowed(origin, 'pix_automatico')) throw new ForbiddenException(`pix_automatico is not available for ${origin.name}`);
+    if (!this.bancoInterGateway || !this.charges) return { http: 503, body: { title: 'Pix Automatico not configured' } };
+    return new PixAutomaticoOps(this.bancoInterGateway, this.charges).run(origin, body || ({} as any));
+  }
+
+  // ---------------------------------------------------------------- recorded charges
 
   private async ownCharge(origin: Origin, id: number): Promise<ExternalCharge | null> {
     if (!this.charges || !Number.isInteger(id) || id <= 0) return null;
     return this.charges.findById(origin.name, id);
   }
 
-  private async processRecordedBoleto(origin: Origin, r: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
+  /**
+   * Claims (origin, ref, method) for a new attempt. Returns the record id, or a response when the reference is
+   * already settled (the existing charge) or in flight.
+   */
+  private async claim(origin: Origin, ref: string, method: string, provider: string, seuNumero: string | null, amount: number,
+    done: (c: ExternalCharge) => Promise<ExternalPaymentResponse> | ExternalPaymentResponse, settled: (c: ExternalCharge) => boolean,
+  ): Promise<number | ExternalPaymentResponse> {
+    const store = this.charges!;
+    const by = `external:${origin.name}`;
+    let charge = await store.find(origin.name, ref, method);
+    if (charge && settled(charge)) return done(charge);
+    if (charge && charge.Status === 'PENDING') {
+      return { success: false, error: 'A charge for this reference is in progress; ask for its status', chargeId: charge.ID };
+    }
+    if (charge) {
+      await store.update(charge.ID, { status: 'PENDING', amount, by });
+      return charge.ID;
+    }
+    const id = await store.claim({ origin: origin.name, externalRef: ref, method, provider, seuNumero, amount, by });
+    if (id !== null) return id;
+    charge = await store.find(origin.name, ref, method);
+    return charge && settled(charge) ? done(charge)
+      : { success: false, error: 'A charge for this reference is in progress; ask for its status', chargeId: charge?.ID };
+  }
+
+  private async processBoleto(origin: Origin, ref: string, r: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
     if (!this.bancoInterGateway) return { success: false, error: 'Boleto gateway not configured' };
-    if (!this.charges) return { success: false, error: 'External charges registry not configured' };
-    const ref = r.externalRef!;
     let seuNumero: string;
     try { seuNumero = seuNumeroFor(origin, ref); } catch (e) { return { success: false, error: (e as Error).message }; }
     const by = `external:${origin.name}`;
-
-    let charge = await this.charges.find(origin.name, ref, 'boleto');
-    if (charge && !RETRYABLE.has(charge.Status) && charge.ProviderRef) {
-      // Same order asked again: the boleto already issued, never a second one.
-      return this.describeBoleto(charge);
-    }
-    if (charge && charge.Status === 'PENDING' && !charge.ProviderRef) {
-      return { success: false, error: 'A boleto for this reference is being issued; ask for its status', chargeId: charge.ID };
-    }
-    let id: number;
-    if (charge) {
-      id = charge.ID; // FAILED earlier: try again under the same record
-      await this.charges.update(id, { status: 'PENDING', amount: Number(r.amount), by });
-    } else {
-      const claimed = await this.charges.claim({ origin: origin.name, externalRef: ref, method: 'boleto', provider: 'inter', seuNumero, amount: Number(r.amount), by });
-      if (claimed === null) {
-        charge = await this.charges.find(origin.name, ref, 'boleto');
-        return charge?.ProviderRef ? this.describeBoleto(charge) : { success: false, error: 'A boleto for this reference is being issued; ask for its status', chargeId: charge?.ID };
-      }
-      id = claimed;
-    }
-
-    const dueDate = r.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate) ? r.dueDate : new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0];
+    const c = await this.claim(origin, ref, 'boleto', 'inter', seuNumero, Number(r.amount),
+      (x) => this.describeBoleto(x), (x) => !RETRYABLE.has(x.Status) && !!x.ProviderRef);
+    if (typeof c !== 'number') return c;
+    const dueDate = r.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(r.dueDate) ? r.dueDate
+      : new Date(Date.now() + (origin.name === 'amode' ? 7 : 3) * 86400000).toISOString().split('T')[0];
     try {
-      const result = await this.bancoInterGateway.createBoleto(
-        r.payerName || '', r.payerCpfCnpj || '', Number(r.amount), dueDate, seuNumero, r.payerEmail || '', r.payerCep || undefined,
-      );
-      if (!result.success || !result.nossoNumero) {
-        await this.charges.update(id, { status: 'FAILED', by });
-        return { success: false, error: result.error || 'Boleto creation failed', chargeId: id };
+      const res = await this.bancoInterGateway.createBoleto(r.payerName || '', r.payerCpfCnpj || '', Number(r.amount), dueDate,
+        seuNumero, r.payerEmail || '', r.payerCep || undefined);
+      if (!res.success || !res.nossoNumero) {
+        await this.charges!.update(c, { status: 'FAILED', by });
+        return { success: false, error: res.error || 'Boleto creation failed', chargeId: c };
       }
-      await this.charges.update(id, { providerRef: result.nossoNumero, status: 'A_RECEBER', by });
+      await this.charges!.update(c, { providerRef: res.nossoNumero, status: 'A_RECEBER', by });
       return {
-        success: true,
-        chargeId: id,
-        seuNumero,
-        transactionId: result.nossoNumero,
-        bankNossoNumero: result.bankNossoNumero ?? null,
-        linhaDigitavel: result.linhaDigitavel,
-        codigoBarras: result.codigoBarras,
-        pixCopiaECola: result.pixCopiaECola,
-        dueDate,
+        success: true, chargeId: c, seuNumero, transactionId: res.nossoNumero, bankNossoNumero: res.bankNossoNumero ?? null,
+        linhaDigitavel: res.linhaDigitavel, codigoBarras: res.codigoBarras, pixCopiaECola: res.pixCopiaECola, dueDate,
       };
     } catch (e) {
-      await this.charges.update(id, { status: 'FAILED', by }).catch(() => undefined);
-      logger.error(`Recorded boleto error (${origin.name} ${ref}): ${(e as Error).message}`);
-      return { success: false, error: (e as Error).message, chargeId: id };
+      await this.charges!.update(c, { status: 'FAILED', by }).catch(() => undefined);
+      logger.error(`Boleto error (${origin.name} ${ref}): ${(e as Error).message}`);
+      return { success: false, error: (e as Error).message, chargeId: c };
     }
   }
 
@@ -163,16 +169,64 @@ export class ExternalPaymentController {
     const raw = this.bancoInterGateway ? await this.bancoInterGateway.getBoletoDetails(charge.ProviderRef!) : null;
     const d = parseCobranca(raw);
     return {
-      success: true,
-      chargeId: charge.ID,
-      seuNumero: charge.SeuNumero,
-      transactionId: charge.ProviderRef,
-      bankNossoNumero: d.bankNossoNumero,
-      linhaDigitavel: d.linhaDigitavel,
-      codigoBarras: d.codigoBarras,
-      pixCopiaECola: d.pixCopiaECola,
-      status: d.situacao || charge.Status,
+      success: true, chargeId: charge.ID, seuNumero: charge.SeuNumero, transactionId: charge.ProviderRef,
+      bankNossoNumero: d.bankNossoNumero, linhaDigitavel: d.linhaDigitavel, codigoBarras: d.codigoBarras,
+      pixCopiaECola: d.pixCopiaECola, status: d.situacao || charge.Status,
     };
+  }
+
+  private async processPix(origin: Origin, ref: string, r: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
+    if (!this.bancoInterGateway) return { success: false, error: 'PIX gateway not configured' };
+    const by = `external:${origin.name}`;
+    const c = await this.claim(origin, ref, 'pix', 'inter', null, Number(r.amount),
+      (x) => ({ success: true, chargeId: x.ID, transactionId: x.ProviderRef, status: x.Status }),
+      (x) => !RETRYABLE.has(x.Status) && !!x.ProviderRef);
+    if (typeof c !== 'number') return c;
+    const txid = pixTxidFor(origin, ref);
+    try {
+      const label = origin.name === 'amode' ? 'Amode' : origin.name;
+      const res = await this.bancoInterGateway.createPixCobranca(r.payerName || `${label} Client`, r.payerCpfCnpj || '00000000000',
+        Number(r.amount), `${origin.code}-${ref}`, `${label} - ${r.description || 'Pagamento'}`.substring(0, 140), txid);
+      if (!res.success || !res.txid) {
+        await this.charges!.update(c, { status: 'FAILED', by });
+        return { success: false, error: res.error || 'PIX creation failed', chargeId: c };
+      }
+      await this.charges!.update(c, { providerRef: res.txid, status: 'ATIVA', by });
+      return { success: true, chargeId: c, transactionId: res.txid, pixCopiaECola: res.pixCopiaECola, qrCodeBase64: res.qrCodeBase64 };
+    } catch (e) {
+      await this.charges!.update(c, { status: 'FAILED', by }).catch(() => undefined);
+      logger.error(`PIX error (${origin.name} ${ref}): ${(e as Error).message}`);
+      return { success: false, error: (e as Error).message, chargeId: c };
+    }
+  }
+
+  /** Card data passes through and is never stored or logged. One reference is charged at most once. */
+  private async processCard(origin: Origin, ref: string, r: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
+    if (!this.cieloGateway) return { success: false, error: 'Credit card gateway not configured' };
+    if (!r.card) return { success: false, error: 'Card data required for credit_card method' };
+    const by = `external:${origin.name}`;
+    const c = await this.claim(origin, ref, 'credit_card', 'cielo', null, Number(r.amount),
+      (x) => ({ success: true, chargeId: x.ID, transactionId: x.ProviderRef, status: x.Status }),
+      (x) => CARD_TAKEN.has(x.Status));
+    if (typeof c !== 'number') return c;
+    try {
+      const cardData: CieloCardData = {
+        cardNumber: r.card.number.replace(/\s/g, ''), holder: r.card.holder, expirationDate: r.card.expirationDate,
+        securityCode: r.card.securityCode, brand: r.card.brand,
+      };
+      const res = await this.cieloGateway.createTransaction(merchantOrderIdFor(origin, ref), r.payerName || origin.name,
+        Number(r.amount), r.installments || 1, cardData);
+      const status = res.success ? (res.status === 2 ? 'PAID' : 'AUTHORIZED') : 'DENIED';
+      await this.charges!.update(c, { providerRef: res.paymentId || res.tid, status, ...(status === 'PAID' ? { paidAt: new Date() } : {}), by });
+      return {
+        success: res.success, chargeId: c, transactionId: res.tid, authorizationCode: res.authorizationCode,
+        returnCode: res.returnCode, status, error: res.success ? undefined : (res.returnMessage || 'Transaction denied'),
+      };
+    } catch (e) {
+      // Unknown outcome: keep it PENDING so a retry does not charge twice; the owner checks the Cielo portal.
+      logger.error(`Card error (${origin.name} ${ref}): ${(e as Error).message}`);
+      return { success: false, error: (e as Error).message, chargeId: c };
+    }
   }
 
   private async recordedStatus(origin: Origin, body: { chargeId?: number; externalRef?: string; method?: string }): Promise<ExternalStatusResponse> {
@@ -181,114 +235,23 @@ export class ExternalPaymentController {
       ? await this.ownCharge(origin, Number(body.chargeId))
       : await this.charges.find(origin.name, String(body.externalRef), body.method || 'boleto');
     if (!charge) return { paid: false, status: 'not_found' };
-    if (!charge.ProviderRef) return { paid: false, status: charge.Status, chargeId: charge.ID };
-    if (FINAL.has(charge.Status)) {
-      return { paid: isCobrancaPaid(charge.Status), status: charge.Status, chargeId: charge.ID, paidAt: charge.PaidAt };
+    const base = { chargeId: charge.ID, method: charge.Method };
+    if (!charge.ProviderRef || charge.Method === 'credit_card') {
+      return { ...base, paid: charge.Status === 'PAID' || charge.Status === 'AUTHORIZED', status: charge.Status, paidAt: charge.PaidAt };
     }
-    const s = await this.bancoInterGateway!.checkBoletoStatus(charge.ProviderRef);
-    if (s.situacao && s.situacao !== 'UNKNOWN' && s.situacao !== 'ERROR' && s.situacao !== charge.Status) {
+    if (FINAL.has(charge.Status) || charge.Status === 'CONCLUIDA') {
+      return { ...base, paid: isCobrancaPaid(charge.Status) || charge.Status === 'CONCLUIDA', status: charge.Status, paidAt: charge.PaidAt };
+    }
+    if (!this.bancoInterGateway) return { ...base, paid: false, status: 'gateway_not_configured' };
+    const s = charge.Method === 'pix'
+      ? await this.bancoInterGateway.checkPixStatus(charge.ProviderRef).then(x => ({ paid: x.paid, situacao: x.status }))
+      : await this.bancoInterGateway.checkBoletoStatus(charge.ProviderRef);
+    if (s.situacao && !['UNKNOWN', 'ERROR', ''].includes(s.situacao) && s.situacao !== charge.Status) {
       const paidAt = s.paid ? new Date() : undefined;
       await this.charges.update(charge.ID, { status: s.situacao, ...(paidAt ? { paidAt } : {}), by: `external:${origin.name}` });
-      return { paid: s.paid, status: s.situacao, chargeId: charge.ID, paidAt: paidAt ?? null };
+      return { ...base, paid: s.paid, status: s.situacao, paidAt: paidAt ?? null };
     }
-    return { paid: s.paid, status: s.situacao, chargeId: charge.ID, paidAt: charge.PaidAt };
-  }
-
-  // ---------------------------------------------------------------- Amode (unchanged behaviour)
-
-  private async processPix(req: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
-    if (!this.bancoInterGateway) {
-      return { success: false, error: 'PIX gateway not configured' };
-    }
-    try {
-      const orderId = `AMODE-${Date.now()}`;
-      const result = await this.bancoInterGateway.createPixCobranca(
-        req.payerName || 'Amode Client',
-        req.payerCpfCnpj || '00000000000',
-        req.amount,
-        orderId,
-        `Amode - ${req.description || 'Assinatura'}`,
-      );
-      if (result.success) {
-        return {
-          success: true,
-          transactionId: result.txid,
-          pixCopiaECola: result.pixCopiaECola,
-          qrCodeBase64: result.qrCodeBase64,
-        };
-      }
-      return { success: false, error: result.error || 'PIX creation failed' };
-    } catch (e) {
-      logger.error(`PIX external error: ${(e as Error).message}`);
-      return { success: false, error: (e as Error).message };
-    }
-  }
-
-  private async processCreditCard(req: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
-    if (!this.cieloGateway) {
-      return { success: false, error: 'Credit card gateway not configured' };
-    }
-    if (!req.card) {
-      return { success: false, error: 'Card data required for credit_card method' };
-    }
-    try {
-      const orderId = `AMODE-${Date.now()}`;
-      const cardData: CieloCardData = {
-        cardNumber: req.card.number.replace(/\s/g, ''),
-        holder: req.card.holder,
-        expirationDate: req.card.expirationDate,
-        securityCode: req.card.securityCode,
-        brand: req.card.brand,
-      };
-      const result = await this.cieloGateway.createTransaction(
-        orderId,
-        req.payerName || 'Amode Client',
-        req.amount,
-        req.installments || 1,
-        cardData,
-      );
-      return {
-        success: result.success,
-        transactionId: result.tid,
-        authorizationCode: result.authorizationCode,
-        returnCode: result.returnCode,
-        error: result.success ? undefined : (result.returnMessage || 'Transaction denied'),
-      };
-    } catch (e) {
-      logger.error(`Credit card external error: ${(e as Error).message}`);
-      return { success: false, error: (e as Error).message };
-    }
-  }
-
-  private async processBoleto(req: ExternalPaymentRequest): Promise<ExternalPaymentResponse> {
-    if (!this.bancoInterGateway) {
-      return { success: false, error: 'Boleto gateway not configured' };
-    }
-    try {
-      const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]; // 7 days
-      const orderId = `AM${Date.now()}`; // Inter seuNumero: at most 15 characters
-      const result = await this.bancoInterGateway.createBoleto(
-        req.payerName || 'Amode Client',
-        req.payerCpfCnpj || '',
-        req.amount,
-        dueDate,
-        orderId,
-        req.payerEmail || '',
-      );
-      if (result.success) {
-        return {
-          success: true,
-          transactionId: result.nossoNumero,
-          linhaDigitavel: result.linhaDigitavel,
-          codigoBarras: result.codigoBarras,
-          pixCopiaECola: result.pixCopiaECola, // Hybrid boleto+PIX
-        };
-      }
-      return { success: false, error: result.error || 'Boleto creation failed' };
-    } catch (e) {
-      logger.error(`Boleto external error: ${(e as Error).message}`);
-      return { success: false, error: (e as Error).message };
-    }
+    return { ...base, paid: s.paid, status: s.situacao, paidAt: charge.PaidAt };
   }
 }
 
@@ -297,52 +260,39 @@ export class ExternalPaymentController {
 export interface ExternalPaymentRequest {
   /** Amode tenant ID (for tracking only; never an identity) */
   tenantId?: string;
-  /** The caller's own order reference (Hipno Online: the Magento order number). Required for Hipno Online. */
+  /** The caller's own reference (Hipno Online: the Magento order number). Required except for Amode. */
   externalRef?: string;
-  /** Payment method: 'pix', 'credit_card', 'boleto' */
+  /** Payment method: 'boleto', 'pix', 'credit_card' (as allowed for the origin) */
   method: string;
   /** Amount in BRL (e.g., 99.00) */
   amount: number;
   /** Description shown to payer */
   description?: string;
-  /** Boleto due date, YYYY-MM-DD (Hipno Online; default today + 3 days) */
+  /** Boleto due date, YYYY-MM-DD (default today + 3 days; Amode + 7) */
   dueDate?: string;
-  /** Payer info */
   payerName?: string;
   payerCpfCnpj?: string;
   payerEmail?: string;
   payerCep?: string;
-  /** Credit card specific */
-  card?: {
-    number: string;
-    holder: string;
-    expirationDate: string; // MM/YYYY
-    securityCode: string;
-    brand: string; // Visa, Master, Elo
-  };
-  /** Installments (credit card only, default 1) */
+  card?: { number: string; holder: string; expirationDate: string; securityCode: string; brand: string };
   installments?: number;
 }
 
 export interface ExternalPaymentResponse {
   success: boolean;
-  /** tbExternalCharges.ID of a recorded charge (Hipno Online) */
+  /** tbExternalCharges.ID */
   chargeId?: number;
   seuNumero?: string | null;
   transactionId?: string | null;
   bankNossoNumero?: string | null;
   status?: string;
   dueDate?: string;
-  /** PIX */
   pixCopiaECola?: string | null;
   qrCodeBase64?: string | null;
-  /** Credit card */
   authorizationCode?: string | null;
   returnCode?: string | null;
-  /** Boleto */
   linhaDigitavel?: string | null;
   codigoBarras?: string | null;
-  /** Error */
   error?: string;
 }
 
@@ -350,5 +300,6 @@ export interface ExternalStatusResponse {
   paid: boolean;
   status: string;
   chargeId?: number;
+  method?: string;
   paidAt?: Date | null;
 }

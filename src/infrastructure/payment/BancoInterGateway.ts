@@ -398,12 +398,39 @@ export class BancoInterGateway {
     }
   }
 
+  /** The Pix key charges are paid to (the account's CNPJ by default). */
+  get pixKey(): string {
+    return this.config.pixKey || this.config.accountNumber;
+  }
+
+  /**
+   * One call to Inter's Pix API (cob, cobr, rec, locrec) with a token for `scope`; Inter's own status and body come
+   * back unchanged, a 4xx is an answer, not an exception. Retries once on 401 with a fresh token.
+   */
+  async pixApi(method: string, path: string, body: any, scope: string, retrying = false): Promise<{ status: number; data: any }> {
+    const token = await this.getToken(scope);
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/json, application/problem+json',
+    };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (this.config.accountNumber) headers['x-conta-corrente'] = this.config.accountNumber;
+    const r = await this.transport(`${this.baseUrl}${path}`, method, headers, body === undefined ? undefined : JSON.stringify(body));
+    if (r.status === 401 && !retrying) {
+      delete this.accessTokens[scope];
+      return this.pixApi(method, path, body, scope, true);
+    }
+    logger.info(`Pix API ${method} ${path.replace(/\?.*$/, '')} -> ${r.status}`);
+    return r;
+  }
+
   async createPixCobranca(
     customerName: string,
     customerCpf: string,
     amount: number,
     orderId: string,
     description: string = 'Hipnoticus - Solicitação de Agendamento',
+    txid?: string,
   ): Promise<PixCobrancaResult> {
     if (!this.config.certPath || !this.config.keyPath) {
       return { success: false, txid: null, pixCopiaECola: null, qrCodeBase64: null,
@@ -428,9 +455,10 @@ export class BancoInterGateway {
 
       logger.info(`Creating PIX cobrança: order=${orderId} amount=${amount} chave=${this.config.pixKey || this.config.accountNumber}`);
 
+      // With our own txid (PUT /cob/{txid}) the txid starts with the origin code, so the statement shows the origin.
       const data = await this.mtlsRequest(
-        `${this.baseUrl}/pix/v2/cob`,
-        'POST',
+        txid ? `${this.baseUrl}/pix/v2/cob/${encodeURIComponent(txid)}` : `${this.baseUrl}/pix/v2/cob`,
+        txid ? 'PUT' : 'POST',
         { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         JSON.stringify(body),
       );
