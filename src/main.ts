@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { initTracing, shutdownTracing } from './infrastructure/cloud/TracingSetup';
+import { serverSpanMiddleware } from './infrastructure/cloud/ServerSpans';
 initTracing();
 
 import { loadCloudConfig } from './infrastructure/cloud/ConfigClient';
@@ -31,6 +32,8 @@ async function bootstrap(): Promise<void> {
   const { serverPort, applicationName } = config;
 
   const app = await NestFactory.create(AppModule);
+  // SERVER span per request: Bun's http instrumentation records only outgoing calls (ServerSpans.ts)
+  app.use(serverSpanMiddleware());
   // Internal-call authentication before every route; the gateway's X-Internal-Token (AUDIT_TOKEN) stays accepted on
   // /internal/audit during the transition
   app.use(internalAuthMiddleware(internalAuthFromEnv(INTERNAL_AUTH_PUBLIC_ROUTES,
