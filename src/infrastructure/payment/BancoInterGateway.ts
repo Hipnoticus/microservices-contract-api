@@ -57,7 +57,7 @@ export interface PixCobrancaResult {
 }
 
 /** One HTTPS call: status code plus the parsed JSON body ({ raw } when the body is not JSON). */
-export type InterTransport = (url: string, method: string, headers: Record<string, string>, body?: string) => Promise<{ status: number; data: any }>;
+export type InterTransport = (url: string, method: string, headers: Record<string, string>, body?: string, timeoutMs?: number) => Promise<{ status: number; data: any }>;
 
 export const COBRANCA_PATH = '/cobranca/v3/cobrancas';
 
@@ -155,12 +155,12 @@ export class BancoInterGateway {
     this.baseUrl = config.sandbox
       ? 'https://cdpj-sandbox.partners.uatinter.co'
       : 'https://cdpj.partners.bancointer.com.br';
-    this.transport = opts.transport || ((u, m, h, b) => this.mtlsCall(u, m, h, b));
+    this.transport = opts.transport || ((u, m, h, b, ms) => this.mtlsCall(u, m, h, b, ms));
     this.sleep = opts.sleep || ((ms) => new Promise(r => setTimeout(r, ms)));
   }
 
   /** Make an HTTPS request with mTLS certificate */
-  private async mtlsCall(url: string, method: string, headers: Record<string, string>, body?: string): Promise<{ status: number; data: any }> {
+  private async mtlsCall(url: string, method: string, headers: Record<string, string>, body?: string, timeoutMs = 15000): Promise<{ status: number; data: any }> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
 
@@ -171,7 +171,7 @@ export class BancoInterGateway {
         method,
         headers: body !== undefined ? { ...headers, 'Content-Length': String(Buffer.byteLength(body)) } : headers,
         rejectUnauthorized: true,
-        timeout: 15000,
+        timeout: timeoutMs,
       };
 
       // mTLS: use cert + key files
@@ -290,9 +290,25 @@ export class BancoInterGateway {
 
       logger.info(`Creating boleto (cobranca v3): order=${orderId} amount=${body.valorNominal} due=${dueDate}`);
 
-      const { status, data } = await this.transport(
-        `${this.baseUrl}${COBRANCA_PATH}`, 'POST', this.cobrancaHeaders(token, true), JSON.stringify(body),
-      );
+      // Inter's issuing POST can take long when the bank is busy (2026-11-27: 15 s timeouts while the boleto WAS
+      // created): wait longer, and if it still times out, look the boleto up by seuNumero before reporting a failure.
+      let status = 0; let data: any = null;
+      try {
+        ({ status, data } = await this.transport(
+          `${this.baseUrl}${COBRANCA_PATH}`, 'POST', this.cobrancaHeaders(token, true), JSON.stringify(body), 30000,
+        ));
+      } catch (e) {
+        logger.warn(`Boleto POST failed for ${body.seuNumero} (${(e as Error).message}); looking it up by seuNumero`);
+      }
+      if (!data?.codigoSolicitacao) {
+        const found = await this.findBySeuNumero(body.seuNumero).catch(() => null);
+        if (found) {
+          logger.info(`Boleto ${body.seuNumero} found at Inter after a failed POST: ${found}`);
+          status = 200; data = { codigoSolicitacao: found };
+        } else if (!status) {
+          return fail('Banco Inter não respondeu a tempo. Tente de novo em instantes.');
+        }
+      }
       logger.info(`Boleto response ${status}: ${JSON.stringify(data).substring(0, 500)}`);
 
       const codigoSolicitacao: string | null = data?.codigoSolicitacao || null;
@@ -330,6 +346,25 @@ export class BancoInterGateway {
       logger.error(`Boleto error: ${(error as Error).message}`);
       return fail((error as Error).message);
     }
+  }
+
+  /**
+   * The codigoSolicitacao of a boleto issued in the last two days with this seuNumero, or null. Used when the issuing
+   * POST timed out or failed: Inter may have created the boleto anyway, and issuing another one would leave two.
+   */
+  async findBySeuNumero(seuNumero: string): Promise<string | null> {
+    const token = await this.getToken('boleto-cobranca.read');
+    const day = (d: number) => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+    const url = `${this.baseUrl}${COBRANCA_PATH}?dataInicial=${day(1)}&dataFinal=${day(-1)}&filtrarDataPor=EMISSAO&itensPorPagina=1000&paginaAtual=0`;
+    const { status, data } = await this.transport(url, 'GET', this.cobrancaHeaders(token));
+    if (status < 200 || status >= 300) return null;
+    for (const c of data?.cobrancas || []) {
+      const x = c?.cobranca || c;
+      if (String(x?.seuNumero || '') === String(seuNumero) && x?.codigoSolicitacao && String(x?.situacao).toUpperCase() !== 'CANCELADO') {
+        return String(x.codigoSolicitacao);
+      }
+    }
+    return null;
   }
 
   /**
