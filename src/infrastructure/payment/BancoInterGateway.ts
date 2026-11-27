@@ -60,6 +60,24 @@ export interface PixCobrancaResult {
 export type InterTransport = (url: string, method: string, headers: Record<string, string>, body?: string, timeoutMs?: number) => Promise<{ status: number; data: any }>;
 
 export const COBRANCA_PATH = '/cobranca/v3/cobrancas';
+/**
+ * The devedor of an immediate Pix (cob): CPF (11 digits) or CNPJ (14), with the name. Without a usable document the
+ * charge goes without devedor, which Inter accepts; a made-up one (00000000000) is refused as an invalid CPF.
+ */
+export function pixDevedor(name: string, doc: string): { devedor?: { nome: string; cpf?: string; cnpj?: string } } {
+  const digits = String(doc || '').replace(/\D/g, '');
+  const nome = String(name || '').trim().substring(0, 200);
+  if (!nome || /^0+$/.test(digits)) return {};
+  if (digits.length === 11) return { devedor: { cpf: digits, nome } };
+  if (digits.length === 14) return { devedor: { cnpj: digits, nome } };
+  return {};
+}
+/** When an immediate Pix stops being payable (calendario.criacao + expiracao), or null when unknown. */
+export function pixExpiresAt(cob: any): Date | null {
+  const created = Date.parse(String(cob?.calendario?.criacao || ''));
+  const seconds = Number(cob?.calendario?.expiracao);
+  return Number.isFinite(created) && Number.isFinite(seconds) ? new Date(created + seconds * 1000) : null;
+}
 
 /**
  * Public URL Banco Inter calls back (Cobrança v3 and PIX). It must be the API host: moses.hipnoticus.com.br only
@@ -466,6 +484,7 @@ export class BancoInterGateway {
     orderId: string,
     description: string = 'Hipnoticus - Solicitação de Agendamento',
     txid?: string,
+    expiresIn = 86400, // 24 h by default: an expired charge shows as an invalid QR Code in the bank app
   ): Promise<PixCobrancaResult> {
     if (!this.config.certPath || !this.config.keyPath) {
       return { success: false, txid: null, pixCopiaECola: null, qrCodeBase64: null,
@@ -475,14 +494,11 @@ export class BancoInterGateway {
       const token = await this.getToken();
 
       const body = {
-        calendario: { expiracao: 86400 }, // 24 h: an expired charge shows as an invalid QR Code in the bank app
+        calendario: { expiracao: Math.round(Math.min(86400, Math.max(300, expiresIn))) },
         valor: { original: amount.toFixed(2) },
         chave: this.config.pixKey || this.config.accountNumber,
-        solicitacaoPagador: description,
-        devedor: {
-          cpf: customerCpf.replace(/\D/g, ''),
-          nome: customerName,
-        },
+        solicitacaoPagador: description.substring(0, 140),
+        ...pixDevedor(customerName, customerCpf),
         infoAdicionais: [
           { nome: 'Pedido', valor: orderId },
         ],

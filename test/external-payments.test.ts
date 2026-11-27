@@ -179,6 +179,38 @@ describe('ExternalPaymentController', () => {
     expect(store.rows[0].Method).toBe('pix');
   });
 
+  test('a Pix asked again for the same reference comes back with its code, without a second charge', async () => {
+    const inter = fakeInter(); const store = new MemoryStore();
+    inter.pixApi = async (m: string, path: string) => ({ status: 200, data: { status: 'ATIVA', pixCopiaECola: 'PIXCC-AGAIN',
+      calendario: { criacao: new Date().toISOString(), expiracao: 3600 } } });
+    const c = new ExternalPaymentController(null, inter, store);
+    const req = { method: 'pix', amount: 3, externalRef: '7899464270', description: 'Hipno Online pedido 7899464270', expiresIn: 3600 };
+    await c.processExternal(hipno, req as any);
+    const again = await c.processExternal(hipno, req as any);
+    expect(again.pixCopiaECola).toBe('PIXCC-AGAIN');
+    expect(again.expiresAt).not.toBeNull();
+    expect(inter.calls.filter((x: any) => x.op === 'pix').length).toBe(1);
+  });
+
+  test('a Pix status says paid on CONCLUIDA, and expired once its time passed unpaid', async () => {
+    const store = new MemoryStore(); const inter = fakeInter();
+    const c = new ExternalPaymentController(null, inter, store);
+    await c.processExternal(hipno, { method: 'pix', amount: 3, externalRef: '7899464271' } as any);
+    inter.pixApi = async () => ({ status: 200, data: { status: 'ATIVA', pixCopiaECola: 'P',
+      calendario: { criacao: new Date(Date.now() - 7200000).toISOString(), expiracao: 3600 } } });
+    const old = await c.checkStatus(hipno, { externalRef: '7899464271', method: 'pix' });
+    expect(old.paid).toBe(false);
+    expect(old.details?.expired).toBe(true);
+    expect(old.details?.pixCopiaECola).toBe('P');
+    const store2 = new MemoryStore(); const inter2 = fakeInter();
+    const c2 = new ExternalPaymentController(null, inter2, store2);
+    await c2.processExternal(hipno, { method: 'pix', amount: 3, externalRef: '7899464272' } as any);
+    inter2.pixApi = async () => ({ status: 200, data: { status: 'CONCLUIDA', calendario: { criacao: new Date().toISOString(), expiracao: 3600 } } });
+    const paid = await c2.checkStatus(hipno, { externalRef: '7899464272', method: 'pix' });
+    expect(paid.paid).toBe(true);
+    expect(store2.rows[0].Status).toBe('CONCLUIDA');
+  });
+
   test('Amode without a reference still works and is recorded as amode', async () => {
     const inter = fakeInter(); const store = new MemoryStore();
     const r = await new ExternalPaymentController(null, inter, store).processExternal(gatewayService, { method: 'boleto', amount: 5, tenantId: 't1' } as any);

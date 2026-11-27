@@ -1,7 +1,7 @@
 import { Controller, Post, Get, Body, Param, Req, Inject, Optional, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { CieloGateway, CieloCardData } from '../../../infrastructure/payment/CieloGateway';
-import { BancoInterGateway, parseCobranca, isCobrancaPaid } from '../../../infrastructure/payment/BancoInterGateway';
+import { BancoInterGateway, parseCobranca, isCobrancaPaid, pixExpiresAt } from '../../../infrastructure/payment/BancoInterGateway';
 import {
   EXTERNAL_REF, FINAL, RETRYABLE, merchantOrderIdFor, originOf, pixTxidFor, seuNumeroFor,
 } from '../../../application/payment/ExternalCharges';
@@ -183,25 +183,45 @@ export class ExternalPaymentController {
     if (!this.bancoInterGateway) return { success: false, error: 'PIX gateway not configured' };
     const by = `external:${origin.name}`;
     const c = await this.claim(origin, ref, 'pix', 'inter', null, Number(r.amount),
-      (x) => ({ success: true, chargeId: x.ID, transactionId: x.ProviderRef, status: x.Status }),
-      (x) => !RETRYABLE.has(x.Status) && !!x.ProviderRef);
+      (x) => this.describePix(x), (x) => !RETRYABLE.has(x.Status) && !!x.ProviderRef);
     if (typeof c !== 'number') return c;
     const txid = pixTxidFor(origin, ref);
     try {
       const label = origin.name === 'amode' ? 'Amode' : origin.name;
-      const res = await this.bancoInterGateway.createPixCobranca(r.payerName || `${label} Client`, r.payerCpfCnpj || '00000000000',
-        Number(r.amount), `${origin.code}-${ref}`, `${label} - ${r.description || 'Pagamento'}`.substring(0, 140), txid);
+      // Amode keeps its "Amode - ..." text; other origins send the payer's text as it is (Hipno Online: "Hipno Online pedido N").
+      const text = origin.name === 'amode' || !r.description ? `${label} - ${r.description || 'Pagamento'}` : r.description;
+      const expiresIn = Number(r.expiresIn) > 0 ? Number(r.expiresIn) : undefined;
+      const res = await this.bancoInterGateway.createPixCobranca(r.payerName || `${label} Client`, r.payerCpfCnpj || '',
+        Number(r.amount), `${origin.code}-${ref}`, text.substring(0, 140), txid, expiresIn);
       if (!res.success || !res.txid) {
         await this.charges!.update(c, { status: 'FAILED', by });
         return { success: false, error: res.error || 'PIX creation failed', chargeId: c };
       }
       await this.charges!.update(c, { providerRef: res.txid, status: 'ATIVA', by });
-      return { success: true, chargeId: c, transactionId: res.txid, pixCopiaECola: res.pixCopiaECola, qrCodeBase64: res.qrCodeBase64 };
+      const seconds = Math.round(Math.min(86400, Math.max(300, expiresIn ?? 86400))); // as createPixCobranca sends it
+      return { success: true, chargeId: c, transactionId: res.txid, pixCopiaECola: res.pixCopiaECola, qrCodeBase64: res.qrCodeBase64,
+        expiresAt: new Date(Date.now() + seconds * 1000).toISOString() };
     } catch (e) {
       await this.charges!.update(c, { status: 'FAILED', by }).catch(() => undefined);
       logger.error(`PIX error (${origin.name} ${ref}): ${(e as Error).message}`);
       return { success: false, error: (e as Error).message, chargeId: c };
     }
+  }
+  /** The stored immediate Pix, asked again for the same reference: its code fresh from Inter, so a retry can show it. */
+  private async describePix(charge: ExternalCharge): Promise<ExternalPaymentResponse> {
+    const cob = await this.pixCob(charge.ProviderRef!);
+    return {
+      success: true, chargeId: charge.ID, transactionId: charge.ProviderRef,
+      pixCopiaECola: cob?.pixCopiaECola ?? null, status: String(cob?.status || charge.Status).toUpperCase(),
+      expiresAt: pixExpiresAt(cob)?.toISOString() ?? null,
+    };
+  }
+  /** GET /pix/v2/cob/{txid}, or null when Inter does not answer it. */
+  private async pixCob(txid: string): Promise<any | null> {
+    if (!this.bancoInterGateway) return null;
+    const r = await this.bancoInterGateway.pixApi('GET', `/pix/v2/cob/${encodeURIComponent(txid)}`, undefined, 'cob.read')
+      .catch(() => ({ status: 0, data: null }));
+    return r.status === 200 && r.data ? r.data : null;
   }
 
   /**
@@ -298,7 +318,16 @@ export class ExternalPaymentController {
     let s: { paid: boolean; situacao: string };
     let details: ExternalStatusResponse['details'];
     if (charge.Method === 'pix') {
-      s = await this.bancoInterGateway!.checkPixStatus(charge.ProviderRef!).then(x => ({ paid: x.paid, situacao: x.status }));
+      // One read gives the status, the code (to show it again) and the expiry (calendario).
+      const cob = await this.pixCob(charge.ProviderRef!);
+      const situacao = cob ? String(cob.status || '').toUpperCase() : 'UNKNOWN';
+      s = { paid: situacao === 'CONCLUIDA', situacao };
+      if (cob) {
+        const at = pixExpiresAt(cob);
+        details = { codigoSolicitacao: null, seuNumero: null, bankNossoNumero: null, linhaDigitavel: null, codigoBarras: null,
+          pixCopiaECola: cob.pixCopiaECola ?? null, txid: charge.ProviderRef, expiresAt: at ? at.toISOString() : null,
+          expired: !s.paid && at !== null && at.getTime() < Date.now() };
+      }
     } else {
       // One read gives the status and the boleto/Pix details (the barcode may appear after issuing).
       const raw = await this.bancoInterGateway!.getBoletoDetails(charge.ProviderRef!);
@@ -340,6 +369,8 @@ export interface ExternalPaymentRequest {
   description?: string;
   /** Boleto due date, YYYY-MM-DD (default today + 3 days; Amode + 7) */
   dueDate?: string;
+  /** Immediate Pix: seconds it stays payable (300 to 86400, default 86400) */
+  expiresIn?: number;
   payerName?: string;
   payerCpfCnpj?: string;
   payerEmail?: string;
@@ -360,6 +391,8 @@ export interface ExternalPaymentResponse {
   dueDate?: string;
   pixCopiaECola?: string | null;
   qrCodeBase64?: string | null;
+  /** Immediate Pix: when it stops being payable (ISO) */
+  expiresAt?: string | null;
   authorizationCode?: string | null;
   returnCode?: string | null;
   /** Cielo CardToken of a saved card */
@@ -379,5 +412,7 @@ export interface ExternalStatusResponse {
   details?: {
     codigoSolicitacao: string | null; seuNumero: string | null; bankNossoNumero: string | null; linhaDigitavel: string | null;
     codigoBarras: string | null; pixCopiaECola: string | null; txid: string | null;
+    /** Immediate Pix: when it stops being payable, and whether that has passed unpaid */
+    expiresAt?: string | null; expired?: boolean;
   };
 }
