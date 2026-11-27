@@ -4,7 +4,7 @@ const s = new Sequelize({
   port: parseInt(process.env.SQL_PORT || '1433'),
   database: process.env.DB || 'hipnoticus',
   username: process.env.USER || 'hipnoticus',
-  password: process.env.PASSWORD || 'hipno8991',
+  password: process.env.PASSWORD, // never commit a password
   logging: false, dialectOptions: { options: { encrypt: true, trustServerCertificate: true } },
 });
 (async () => {

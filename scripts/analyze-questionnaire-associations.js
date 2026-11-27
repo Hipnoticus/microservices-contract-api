@@ -8,7 +8,7 @@ const devDb = new Sequelize({
 
 const prodDb = new Sequelize({
   dialect: 'mssql', host: 'mssql2.hipnoterapia.org', port: 1433,
-  database: 'hipnoticus', username: 'hipnoticus', password: 'hipno8991',
+  database: 'hipnoticus', username: process.env.PROD_DB_USER, password: process.env.PROD_DB_PASSWORD, // never commit a password
   logging: false, dialectOptions: { options: { encrypt: true, trustServerCertificate: true } },
 });
 

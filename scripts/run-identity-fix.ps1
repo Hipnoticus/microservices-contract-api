@@ -1,6 +1,7 @@
 $server = "mssql2.hipnoterapia.org"
-$user = "hipnoticus"
-$pass = "hipno8991"
+# Login and password from the environment (PROD_DB_USER, SQLCMDPASSWORD); never commit a password.
+$user = $env:PROD_DB_USER
+if (-not $user -or -not $env:SQLCMDPASSWORD) { throw 'set PROD_DB_USER and SQLCMDPASSWORD first' }
 
 $tables = @(
     "tbPayments","tbLeads","tbProducts","tbFormasPagamento","tbModules",
@@ -28,7 +29,7 @@ foreach ($tbl in $tables) {
         "EXEC sp_rename '" + $tbl + "_new', '$tbl'; " +
         "PRINT '$tbl IDENTITY added (seed='+CAST(@maxid AS VARCHAR)+')';"
 
-    $result = docker exec hipnoticus-mssql /opt/mssql-tools18/bin/sqlcmd -S $server -U $user -P $pass -d Hipnoticus -C -Q $sql 2>&1
+    $result = docker exec -e SQLCMDPASSWORD hipnoticus-mssql /opt/mssql-tools18/bin/sqlcmd -S $server -U $user -d Hipnoticus -C -Q $sql 2>&1
     $output = ($result | Out-String).Trim()
     if ($output -match "error|Msg \d") {
         Write-Host "FAIL: $tbl - $output" -ForegroundColor Red

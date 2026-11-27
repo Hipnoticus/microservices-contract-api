@@ -1,7 +1,7 @@
 -- Sync dev database from production via OPENROWSET
--- Run on localhost (dev) MSSQL as sa
+-- Run on localhost (dev) MSSQL as sa. Fill in a production login below at run time; never commit it.
 
-DECLARE @prodConn NVARCHAR(500) = 'Server=mssql2.hipnoterapia.org;Database=Hipnoticus;UID=hipnoticus;PWD=hipno8991;TrustServerCertificate=Yes;';
+DECLARE @prodConn NVARCHAR(500) = 'Server=mssql2.hipnoterapia.org;Database=Hipnoticus;UID=<login>;PWD=<password>;TrustServerCertificate=Yes;';
 DECLARE @sql NVARCHAR(MAX);
 DECLARE @tbl NVARCHAR(128);
 DECLARE @cols NVARCHAR(MAX);
