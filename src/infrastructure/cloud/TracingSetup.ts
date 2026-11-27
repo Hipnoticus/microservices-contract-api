@@ -21,7 +21,8 @@ export function initTracing(): void {
 
   sdk = new NodeSDK({
     resource: new Resource({
-      [ATTR_SERVICE_NAME]: 'ISSUE-SERVICE',
+      // was 'ISSUE-SERVICE' (copied from IssueAPI), so every ContractAPI span was filed under issue-service
+      [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'CONTRACT-SERVICE',
     }),
     traceExporter: new ZipkinExporter({ url: zipkinEndpoint }),
     instrumentations: [
